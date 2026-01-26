@@ -504,7 +504,7 @@ def main():
 
         submit_button = st.form_submit_button(
             "🚀 모든 포트폴리오 계산 시작",
-            use_container_width=True
+            width='stretch'
         )
 
     # ========================================================================
@@ -608,7 +608,7 @@ def main():
                 # Stacked bar chart
                 fig = create_success_failure_stacked_chart(result, selected_portfolio)
                 if fig:
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
                 # Statistics table
                 st.markdown("#### 주요 통계량")
@@ -624,7 +624,7 @@ def main():
                         '75th Percentile': f"{result['statistics'].get('percentile_75', 0):.2f}",
                         '95th Percentile': f"{result['statistics'].get('percentile_95', 0):.2f}"
                     }])
-                    st.dataframe(stats_df, use_container_width=True)
+                    st.dataframe(stats_df, width='stretch')
 
                 # Excel download button
                 st.divider()
@@ -650,14 +650,14 @@ def main():
             if selected_portfolios:
                 # Comparison bar chart
                 fig = create_comparison_bar_chart(results, selected_portfolios)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
                 st.divider()
 
                 # Comparison table
                 st.markdown("#### 포트폴리오별 주요 지표 비교")
                 comparison_df = create_comparison_table(results, selected_portfolios)
-                st.dataframe(comparison_df, use_container_width=True)
+                st.dataframe(comparison_df, width='stretch')
 
                 # Excel download button for comparison
                 st.divider()
