@@ -10,6 +10,7 @@ import numpy as np
 from datetime import datetime, date
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import io
 import os
 
@@ -52,42 +53,76 @@ def get_portfolio_names():
 
 
 # ============================================================================
-# Backtest Function (Placeholder)
+# Portfolio Info Functions
+# ============================================================================
+def get_portfolio_info(portfolio_name):
+    """Get portfolio information including weights, target return, and risk"""
+    if portfolio_name not in PORTFOLIOS:
+        return None
+
+    port_config = PORTFOLIOS[portfolio_name]
+    return {
+        'name': portfolio_name,
+        'target_return': port_config['target_return'],
+        'target_risk': port_config['target_risk'],
+        'weights': port_config['weights']
+    }
+
+
+def create_portfolio_weights_chart(portfolio_name):
+    """Create pie chart for portfolio weights"""
+    info = get_portfolio_info(portfolio_name)
+    if info is None:
+        return None
+
+    weights = info['weights']
+
+    fig = go.Figure(data=[go.Pie(
+        labels=list(weights.keys()),
+        values=list(weights.values()),
+        hole=0.4,
+        textinfo='label+percent',
+        textposition='outside'
+    )])
+
+    fig.update_layout(
+        title=f'Asset Allocation - {portfolio_name}',
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+    )
+
+    return fig
+
+
+def create_portfolio_info_table(portfolio_names):
+    """Create table with portfolio info (target return, risk, weights)"""
+    data = []
+    for port_name in portfolio_names:
+        info = get_portfolio_info(port_name)
+        if info:
+            row = {
+                'Portfolio': port_name,
+                'Target Return (%)': info['target_return'],
+                'Target Risk (%)': info['target_risk'],
+            }
+            # Add weights
+            for asset, weight in info['weights'].items():
+                row[asset] = f"{weight:.2f}%"
+            data.append(row)
+
+    return pd.DataFrame(data)
+
+
+# ============================================================================
+# Backtest Function
 # ============================================================================
 def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
                  period, upper_guard, lower_guard, failure_threshold):
     """
     Run withdrawal rate backtest for a portfolio
 
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Benchmark price data
-    weights : dict
-        Portfolio weights (%)
-    withdrawal_rate : float
-        Annual withdrawal rate (%)
-    start_date : date
-        Backtest start date
-    end_date : date
-        Backtest end date
-    period : int
-        Withdrawal period (years)
-    upper_guard : float or None
-        Upper guardrail (%), None if no constraint
-    lower_guard : float or None
-        Lower guardrail (%), None if no constraint
-    failure_threshold : float
-        Failure threshold (% of initial value)
-
-    Returns
-    -------
-    dict
-        Backtest results containing success_rate, final_values, monthly_data, statistics
+    Returns results including NAV paths for visualization
     """
-    # TODO: Implement actual backtesting logic
-    # This is a placeholder implementation
-
     # Convert weights to decimal
     weights_decimal = {k: v/100 for k, v in weights.items()}
 
@@ -127,7 +162,10 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
             'start_months': [],
             'success_count': 0,
             'failure_count': 0,
-            'total_simulations': 0
+            'total_simulations': 0,
+            'nav_paths': [],
+            'nav_paths_success': [],
+            'nav_paths_failure': []
         }
 
     # Run rolling window simulations
@@ -138,6 +176,9 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
     final_values = []
     start_months_list = []
     success_flags = []
+    nav_paths = []  # Store all NAV paths
+    nav_paths_success = []  # Success paths
+    nav_paths_failure = []  # Failure paths
 
     # Simulate for each possible start month
     valid_start_months = list(month_starts.values)[:-period_months] if len(month_starts) > period_months else []
@@ -145,16 +186,7 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
     for i, start_month in enumerate(valid_start_months):
         V = v0
         failed = False
-
-        # Get returns for this simulation period
-        sim_start_idx = portfolio_returns.index.get_loc(start_month)
-
-        # Find the index period_months later
-        end_month_idx = min(i + period_months, len(month_starts) - 1)
-        if end_month_idx < len(month_starts):
-            end_month = month_starts.values[i + period_months] if i + period_months < len(month_starts) else portfolio_returns.index[-1]
-        else:
-            continue
+        path = [V]  # NAV path for this simulation
 
         # Simple monthly simulation
         current_month_starts = month_starts.values[i:i+period_months+1]
@@ -172,6 +204,7 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
 
             if V <= 0:
                 failed = True
+                path.append(0)
                 break
 
             # Get monthly return
@@ -186,6 +219,8 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
             except:
                 pass
 
+            path.append(V)
+
             # Check failure condition
             if V < failure_value:
                 failed = True
@@ -193,7 +228,14 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
 
         final_values.append(V)
         start_months_list.append(start_month)
-        success_flags.append(not failed and V >= failure_value)
+        is_success = not failed and V >= failure_value
+        success_flags.append(is_success)
+        nav_paths.append(path)
+
+        if is_success:
+            nav_paths_success.append(path)
+        else:
+            nav_paths_failure.append(path)
 
     # Calculate statistics
     if len(final_values) > 0:
@@ -235,7 +277,11 @@ def run_backtest(data, weights, withdrawal_rate, start_date, end_date,
         'start_months': start_months_list,
         'success_count': success_count,
         'failure_count': failure_count,
-        'total_simulations': len(final_values)
+        'total_simulations': len(final_values),
+        'nav_paths': nav_paths,
+        'nav_paths_success': nav_paths_success,
+        'nav_paths_failure': nav_paths_failure,
+        'period_months': period_months
     }
 
 
@@ -257,6 +303,17 @@ def create_single_portfolio_excel(portfolio_name, result_data, params):
         stats_df['failure_rate'] = result_data['failure_rate']
         stats_df['total_simulations'] = result_data['total_simulations']
         stats_df.to_excel(writer, sheet_name='Statistics', index=False)
+
+        # Portfolio info sheet
+        info = get_portfolio_info(portfolio_name)
+        if info:
+            info_df = pd.DataFrame([{
+                'Portfolio': portfolio_name,
+                'Target Return (%)': info['target_return'],
+                'Target Risk (%)': info['target_risk'],
+                **{f'{k} (%)': v for k, v in info['weights'].items()}
+            }])
+            info_df.to_excel(writer, sheet_name='Portfolio_Info', index=False)
 
         # Parameters sheet
         params_df = pd.DataFrame([{
@@ -298,12 +355,15 @@ def create_comparison_excel(selected_portfolios, results, params):
         summary_df = pd.DataFrame(summary_data)
         summary_df.to_excel(writer, sheet_name='Summary', index=False)
 
+        # Portfolio info sheet
+        portfolio_info_df = create_portfolio_info_table(selected_portfolios)
+        portfolio_info_df.to_excel(writer, sheet_name='Portfolio_Info', index=False)
+
         # Individual sheets for each portfolio
         for port_name in selected_portfolios:
             if port_name in results:
                 result = results[port_name]
                 if not result['monthly_data'].empty:
-                    # Shorten sheet name if too long
                     sheet_name = port_name[:31] if len(port_name) > 31 else port_name
                     result['monthly_data'].to_excel(writer, sheet_name=sheet_name, index=False)
 
@@ -325,9 +385,121 @@ def create_comparison_excel(selected_portfolios, results, params):
 # ============================================================================
 # Visualization Functions
 # ============================================================================
+def create_nav_paths_chart(result_data, portfolio_name, max_paths=200):
+    """Create line chart showing all NAV simulation paths"""
+    nav_paths_success = result_data.get('nav_paths_success', [])
+    nav_paths_failure = result_data.get('nav_paths_failure', [])
+
+    if not nav_paths_success and not nav_paths_failure:
+        return None
+
+    fig = go.Figure()
+
+    # Sample paths if too many
+    if len(nav_paths_failure) > max_paths // 2:
+        sample_idx = np.random.choice(len(nav_paths_failure), max_paths // 2, replace=False)
+        sampled_failure = [nav_paths_failure[i] for i in sample_idx]
+    else:
+        sampled_failure = nav_paths_failure
+
+    if len(nav_paths_success) > max_paths // 2:
+        sample_idx = np.random.choice(len(nav_paths_success), max_paths // 2, replace=False)
+        sampled_success = [nav_paths_success[i] for i in sample_idx]
+    else:
+        sampled_success = nav_paths_success
+
+    # Plot failure paths (red)
+    for i, path in enumerate(sampled_failure):
+        fig.add_trace(go.Scatter(
+            x=list(range(len(path))),
+            y=path,
+            mode='lines',
+            line=dict(color='rgba(255, 0, 0, 0.3)', width=1),
+            showlegend=(i == 0),
+            name='Failure',
+            hoverinfo='skip'
+        ))
+
+    # Plot success paths (green)
+    for i, path in enumerate(sampled_success):
+        fig.add_trace(go.Scatter(
+            x=list(range(len(path))),
+            y=path,
+            mode='lines',
+            line=dict(color='rgba(0, 128, 0, 0.2)', width=1),
+            showlegend=(i == 0),
+            name='Success',
+            hoverinfo='skip'
+        ))
+
+    # Add initial value reference line
+    fig.add_hline(y=100, line_dash="dash", line_color="blue",
+                  annotation_text="Initial Value (100)")
+
+    fig.update_layout(
+        title=f'Simulation Paths - {portfolio_name}',
+        xaxis_title='Month',
+        yaxis_title='Portfolio Value',
+        hovermode='closest',
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+
+    return fig
+
+
+def create_terminal_values_chart(result_data, portfolio_name):
+    """Create scatter chart showing terminal values by start date"""
+    monthly_data = result_data['monthly_data']
+
+    if monthly_data.empty:
+        return None
+
+    fig = go.Figure()
+
+    # Separate success and failure
+    success_mask = monthly_data['Success']
+
+    # Failure points (red)
+    fig.add_trace(go.Scatter(
+        x=monthly_data.loc[~success_mask, 'Start Month'],
+        y=monthly_data.loc[~success_mask, 'Final Value'],
+        mode='markers',
+        marker=dict(color='red', size=5, opacity=0.5),
+        name='Failure'
+    ))
+
+    # Success points (green)
+    fig.add_trace(go.Scatter(
+        x=monthly_data.loc[success_mask, 'Start Month'],
+        y=monthly_data.loc[success_mask, 'Final Value'],
+        mode='markers',
+        marker=dict(color='green', size=5, opacity=0.3),
+        name='Success'
+    ))
+
+    # Add reference lines
+    fig.add_hline(y=100, line_dash="dash", line_color="blue",
+                  annotation_text="Initial Value (100)")
+
+    median_val = monthly_data['Final Value'].median()
+    fig.add_hline(y=median_val, line_dash="dot", line_color="orange",
+                  annotation_text=f"Median ({median_val:.1f})")
+
+    fig.update_layout(
+        title=f'Terminal Values by Start Date - {portfolio_name}',
+        xaxis_title='Start Date',
+        yaxis_title='Final Portfolio Value',
+        hovermode='closest',
+        showlegend=True
+    )
+
+    return fig
+
+
 def create_success_failure_stacked_chart(result_data, portfolio_name):
     """Create stacked bar chart for success/failure by start month"""
-    monthly_data = result_data['monthly_data']
+    monthly_data = result_data['monthly_data'].copy()
 
     if monthly_data.empty:
         return None
@@ -361,6 +533,55 @@ def create_success_failure_stacked_chart(result_data, portfolio_name):
         xaxis_title='Start Month',
         yaxis_title='Count',
         legend_title='Result',
+        hovermode='x unified'
+    )
+
+    return fig
+
+
+def create_monthly_failure_rate_chart(result_data, portfolio_name):
+    """Create line chart showing failure rate by start month"""
+    monthly_data = result_data['monthly_data'].copy()
+
+    if monthly_data.empty:
+        return None
+
+    # Group by month
+    monthly_data['Year_Month'] = pd.to_datetime(monthly_data['Start Month']).dt.to_period('M')
+    monthly_grouped = monthly_data.groupby('Year_Month')['Success'].agg(['sum', 'count']).reset_index()
+    monthly_grouped.columns = ['Year_Month', 'Success_Count', 'Total_Count']
+    monthly_grouped['Failure_Rate'] = (1 - monthly_grouped['Success_Count'] / monthly_grouped['Total_Count']) * 100
+    monthly_grouped['Date'] = monthly_grouped['Year_Month'].dt.to_timestamp()
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Scatter(
+        x=monthly_grouped['Date'],
+        y=monthly_grouped['Failure_Rate'],
+        mode='lines',
+        fill='tozeroy',
+        line=dict(color='darkred', width=2),
+        fillcolor='rgba(255, 0, 0, 0.3)',
+        name='Failure Rate'
+    ))
+
+    # Add major financial events
+    events = [
+        ('2008-09-15', 'Lehman Brothers'),
+        ('2020-03-15', 'COVID-19'),
+    ]
+
+    for event_date, event_name in events:
+        event_dt = pd.to_datetime(event_date)
+        if monthly_grouped['Date'].min() <= event_dt <= monthly_grouped['Date'].max():
+            fig.add_vline(x=event_dt, line_dash="dash", line_color="black", opacity=0.5)
+            fig.add_annotation(x=event_dt, y=monthly_grouped['Failure_Rate'].max() * 0.9,
+                             text=event_name, showarrow=False, textangle=-90)
+
+    fig.update_layout(
+        title=f'Monthly Failure Rate - {portfolio_name}',
+        xaxis_title='Start Month',
+        yaxis_title='Failure Rate (%)',
         hovermode='x unified'
     )
 
@@ -504,7 +725,7 @@ def main():
 
         submit_button = st.form_submit_button(
             "🚀 모든 포트폴리오 계산 시작",
-            width='stretch'
+            use_container_width=True
         )
 
     # ========================================================================
@@ -580,6 +801,39 @@ def main():
             if selected_portfolio in results:
                 result = results[selected_portfolio]
 
+                # ============================================================
+                # Portfolio Information Section
+                # ============================================================
+                st.markdown("### 📋 포트폴리오 정보")
+
+                port_info = get_portfolio_info(selected_portfolio)
+                if port_info:
+                    col1, col2 = st.columns([1, 2])
+
+                    with col1:
+                        st.metric("기대 수익률", f"{port_info['target_return']:.2f}%")
+                        st.metric("기대 변동성", f"{port_info['target_risk']:.2f}%")
+
+                    with col2:
+                        # Weights pie chart
+                        fig_weights = create_portfolio_weights_chart(selected_portfolio)
+                        if fig_weights:
+                            st.plotly_chart(fig_weights, use_container_width=True)
+
+                # Weights table
+                weights_df = pd.DataFrame([
+                    {'Asset': k, 'Weight (%)': f"{v:.2f}"}
+                    for k, v in port_info['weights'].items()
+                ])
+                st.dataframe(weights_df, use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # ============================================================
+                # Backtest Results Section
+                # ============================================================
+                st.markdown("### 📈 백테스팅 결과")
+
                 # Display success rate prominently
                 col1, col2, col3 = st.columns(3)
 
@@ -605,13 +859,39 @@ def main():
 
                 st.divider()
 
-                # Stacked bar chart
-                fig = create_success_failure_stacked_chart(result, selected_portfolio)
-                if fig:
-                    st.plotly_chart(fig, width='stretch')
+                # ============================================================
+                # Visualization Section
+                # ============================================================
+                st.markdown("### 📉 시각화")
+
+                # NAV Paths Chart
+                st.markdown("#### Simulation Paths (NAV)")
+                fig_paths = create_nav_paths_chart(result, selected_portfolio)
+                if fig_paths:
+                    st.plotly_chart(fig_paths, use_container_width=True)
+
+                # Terminal Values Chart
+                st.markdown("#### Terminal Values by Start Date")
+                fig_terminal = create_terminal_values_chart(result, selected_portfolio)
+                if fig_terminal:
+                    st.plotly_chart(fig_terminal, use_container_width=True)
+
+                # Success/Failure Stacked Chart
+                st.markdown("#### Success/Failure by Start Month")
+                fig_stacked = create_success_failure_stacked_chart(result, selected_portfolio)
+                if fig_stacked:
+                    st.plotly_chart(fig_stacked, use_container_width=True)
+
+                # Monthly Failure Rate Chart
+                st.markdown("#### Monthly Failure Rate")
+                fig_failure_rate = create_monthly_failure_rate_chart(result, selected_portfolio)
+                if fig_failure_rate:
+                    st.plotly_chart(fig_failure_rate, use_container_width=True)
+
+                st.divider()
 
                 # Statistics table
-                st.markdown("#### 주요 통계량")
+                st.markdown("### 📊 주요 통계량")
                 if result['statistics']:
                     stats_df = pd.DataFrame([{
                         'Mean Final Value': f"{result['statistics'].get('mean_final_value', 0):.2f}",
@@ -624,7 +904,7 @@ def main():
                         '75th Percentile': f"{result['statistics'].get('percentile_75', 0):.2f}",
                         '95th Percentile': f"{result['statistics'].get('percentile_95', 0):.2f}"
                     }])
-                    st.dataframe(stats_df, width='stretch')
+                    st.dataframe(stats_df, use_container_width=True)
 
                 # Excel download button
                 st.divider()
@@ -648,16 +928,31 @@ def main():
             )
 
             if selected_portfolios:
+                # ============================================================
+                # Portfolio Information Comparison
+                # ============================================================
+                st.markdown("### 📋 포트폴리오 정보 비교")
+
+                portfolio_info_df = create_portfolio_info_table(selected_portfolios)
+                st.dataframe(portfolio_info_df, use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # ============================================================
+                # Backtest Results Comparison
+                # ============================================================
+                st.markdown("### 📈 백테스팅 결과 비교")
+
                 # Comparison bar chart
                 fig = create_comparison_bar_chart(results, selected_portfolios)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
 
                 st.divider()
 
                 # Comparison table
                 st.markdown("#### 포트폴리오별 주요 지표 비교")
                 comparison_df = create_comparison_table(results, selected_portfolios)
-                st.dataframe(comparison_df, width='stretch')
+                st.dataframe(comparison_df, use_container_width=True, hide_index=True)
 
                 # Excel download button for comparison
                 st.divider()
