@@ -121,12 +121,19 @@ class WithdrawalOptimizer:
                 for year in range(1, 10):
                     annual_withdrawals.append(annual_withdrawals[0] * (1.02 ** year))
 
+                # 모든 rolling window에 대해 동일한 인출 패턴 생성
+                withdrawal_paths = []
+                total_withdrawals = []
+                for _ in range(len(fixed_vt)):
+                    w_path = np.array([monthly_withdrawal * (1.02 ** (i//12)) for i in range(120)])
+                    withdrawal_paths.append(w_path)
+                    total_withdrawals.append(np.sum(w_path))
+
                 fixed_results_df = pd.DataFrame({
                     'terminal_nav': fixed_vt,
                     'is_fail': fixed_vt < v0,
-                    'withdrawal_path': [np.array(
-                        [monthly_withdrawal * (1.02 ** (i//12)) for i in range(120)]
-                    ) for _ in range(len(fixed_vt))],
+                    'withdrawal_path': withdrawal_paths,
+                    'total_withdrawal': total_withdrawals,  # 필수 컬럼 추가
                     'nav_path': [np.full(121, v0) for _ in range(len(fixed_vt))]  # 근사값
                 })
 
