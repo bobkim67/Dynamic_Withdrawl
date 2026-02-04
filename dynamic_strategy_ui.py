@@ -34,6 +34,12 @@ def render_dynamic_strategies_tab(benchmark_data):
     - **Guyton-Klinger**: 고정 비율 단계적 조정
     """)
 
+    # Initialize session state for optimization
+    if 'dynamic_optimization_results' not in st.session_state:
+        st.session_state['dynamic_optimization_results'] = None
+    if 'dynamic_optimization_constraints' not in st.session_state:
+        st.session_state['dynamic_optimization_constraints'] = None
+
     # Create tabs for different sections
     opt_tab, comp_tab, detail_tab = st.tabs(
         ["🔍 최적화", "📊 비교 분석", "📈 상세 분석"]
@@ -145,8 +151,13 @@ def render_optimization_section(benchmark_data):
             st.error("최소 1개 이상의 포트폴리오를 선택해주세요.")
             return
 
-        with st.spinner("데이터 전처리 중..."):
-            try:
+        # 제약조건 검증
+        if min_wr >= max_wr:
+            st.error("최소 인출률이 최대 인출률보다 작아야 합니다.")
+            return
+
+        try:
+            with st.spinner("데이터 전처리 중..."):
                 # 데이터 전처리
                 preprocessor = DataPreprocessor(benchmark_data, add_portfolios=True)
                 returns, month_starts = preprocessor.get_data()
@@ -164,7 +175,8 @@ def render_optimization_section(benchmark_data):
                 }
 
                 st.info(f"🔄 {len(selected_portfolios)}개 포트폴리오 × 3개 전략 × {len(withdrawal_rates)}개 인출률 = "
-                       f"{len(selected_portfolios) * 3 * len(withdrawal_rates):,}개 시나리오 실행 중...")
+                       f"{len(selected_portfolios) * 3 * len(withdrawal_rates):,}개 시나리오 실행 중...\n"
+                       f"(시간이 걸릴 수 있습니다.)")
 
                 # 최적화 실행
                 results_df = optimizer.optimize_all_portfolios(
@@ -176,20 +188,23 @@ def render_optimization_section(benchmark_data):
                 )
 
                 # 세션에 결과 저장
-                st.session_state['optimization_results'] = results_df
-                st.session_state['optimization_constraints'] = constraints
-                st.session_state['optimization_portfolios'] = selected_portfolios
+                st.session_state['dynamic_optimization_results'] = results_df
+                st.session_state['dynamic_optimization_constraints'] = constraints
+                st.session_state['dynamic_optimization_portfolios'] = selected_portfolios
 
                 st.success("✅ 최적화 완료!")
+                st.balloons()
 
-            except Exception as e:
-                st.error(f"❌ 오류 발생: {str(e)}")
-                return
+        except Exception as e:
+            st.error(f"❌ 오류 발생: {str(e)}")
+            with st.expander("오류 세부사항"):
+                st.code(str(e))
+            return
 
     # 결과 표시
-    if 'optimization_results' in st.session_state:
-        results_df = st.session_state['optimization_results']
-        constraints = st.session_state['optimization_constraints']
+    if st.session_state.get('dynamic_optimization_results') is not None:
+        results_df = st.session_state['dynamic_optimization_results']
+        constraints = st.session_state['dynamic_optimization_constraints']
 
         st.divider()
         st.subheader("📊 최적화 결과")
@@ -301,11 +316,11 @@ def render_comparison_section():
     """
     st.subheader("전략 비교")
 
-    if 'optimization_results' not in st.session_state:
-        st.info("먼저 최적화를 실행해주세요.")
+    if st.session_state.get('dynamic_optimization_results') is None:
+        st.info("👈 왼쪽 '최적화' 탭에서 먼저 최적화를 실행해주세요.")
         return
 
-    results_df = st.session_state['optimization_results']
+    results_df = st.session_state['dynamic_optimization_results']
 
     # 포트폴리오 선택
     selected_portfolio = st.selectbox(
@@ -376,11 +391,11 @@ def render_detailed_analysis_section():
     """
     st.subheader("상세 분석")
 
-    if 'optimization_results' not in st.session_state:
-        st.info("먼저 최적화를 실행해주세요.")
+    if st.session_state.get('dynamic_optimization_results') is None:
+        st.info("👈 왼쪽 '최적화' 탭에서 먼저 최적화를 실행해주세요.")
         return
 
-    results_df = st.session_state['optimization_results']
+    results_df = st.session_state['dynamic_optimization_results']
 
     st.markdown("""
     ### 주요 지표 설명
