@@ -16,6 +16,7 @@ import os
  
 # Import portfolio definitions
 from withdrawal_backtest import PORTFOLIOS, BENCHMARK_MAPPING
+from dynamic_strategy_ui import render_dynamic_strategies_tab
  
 # ============================================================================
 # Page Configuration
@@ -937,7 +938,7 @@ def main():
         params = st.session_state['params']
  
         # Create tabs for different views
-        tab1, tab2 = st.tabs(["📊 개별 포트폴리오 분석", "🔄 포트폴리오 비교"])
+        tab1, tab2, tab3 = st.tabs(["📊 개별 포트폴리오 분석", "🔄 포트폴리오 비교", "🎯 Dynamic 전략"])
  
         # ====================================================================
         # Tab 1: Individual Portfolio Analysis
@@ -1184,7 +1185,13 @@ def main():
                 )
             else:
                 st.warning("비교할 포트폴리오를 선택해주세요.")
- 
- 
+
+        # ====================================================================
+        # Tab 3: Dynamic Withdrawal Strategies
+        # ====================================================================
+        with tab3:
+            render_dynamic_strategies_tab(data)
+
+
 if __name__ == "__main__":
     main()
