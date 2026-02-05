@@ -10,6 +10,8 @@ from typing import List, Dict, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
+from withdrawal_backtest import PORTFOLIOS, BENCHMARK_MAPPING
+
 # tqdm 선택적 import
 try:
     from tqdm import tqdm
@@ -511,3 +513,268 @@ class DynamicWithdrawalSimulator:
             print(f"완료: {n_paths:,}개 경로")
 
         return pd.DataFrame(results)
+
+    # ============================================================
+    # 특정 경로의 일별 상세 데이터 반환
+    # ============================================================
+
+    @staticmethod
+    def _build_asset_groups(portfolio: str) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        포트폴리오 가중치를 4개 자산군으로 분류하여 반환
+
+        자산군 분류:
+          Korean_Equity : 한국주식
+          US_Growth     : 미국성장주
+          Bond          : 한국종합채권, 한국국고채10년, 신흥국달러채권, 미국채권, 미국외글로벌채권
+          Gold          : 금
+
+        Returns
+        -------
+        Dict mapping group name → list of (mapped_column_name, weight_fraction)
+        """
+        if portfolio not in PORTFOLIOS:
+            raise ValueError(f"Unknown portfolio: '{portfolio}'. "
+                             f"Available: {list(PORTFOLIOS.keys())}")
+
+        raw_weights = PORTFOLIOS[portfolio]['weights']  # % 단위
+
+        # 자산군 분류 규칙 (원본 키 → 그룹)
+        GROUP_MAP = {
+            '한국주식':        'Korean_Equity',
+            '미국성장주':      'US_Growth',
+            '한국종합채권':    'Bond',
+            '한국국고채10년':  'Bond',
+            '신흥국달러채권':  'Bond',
+            '미국채권':        'Bond',
+            '미국외글로벌채권': 'Bond',
+            '금':             'Gold',
+        }
+
+        groups: Dict[str, List[Tuple[str, float]]] = {
+            'Korean_Equity': [], 'US_Growth': [], 'Bond': [], 'Gold': []
+        }
+
+        for asset_key, weight_pct in raw_weights.items():
+            group = GROUP_MAP.get(asset_key)
+            if group is None:
+                raise ValueError(f"Cannot classify asset '{asset_key}' into a group")
+            col_name = BENCHMARK_MAPPING.get(asset_key, asset_key)
+            groups[group].append((col_name, weight_pct / 100.0))  # % → 비율
+
+        return groups
+
+    def get_single_path_detail(self,
+                               portfolio: str,
+                               start_date,
+                               strategy: str,
+                               horizon_years: int = 10,
+                               initial_wr: float = 0.05,
+                               guardrail_width: float = 0.20,
+                               adjustment_pct: float = 0.10,
+                               freeze_threshold: float = -0.10,
+                               inflation_rate: float = 0.02,
+                               v0: float = 100.0) -> pd.DataFrame:
+        """
+        특정 시작일의 일별 경로 데이터 반환
+
+        Parameters
+        ----------
+        portfolio : str
+            포트폴리오 이름 (예: 'Port_5.0%')
+        start_date : str or pd.Timestamp
+            시뮬레이션 시작일 (예: '2008-01-02')
+        strategy : str
+            'guardrails' 또는 'guyton_klinger'
+        horizon_years : int
+            시뮬레이션 기간 (년)
+        initial_wr : float
+            초기 인출률
+        guardrail_width : float
+            Guardrail 폭
+        adjustment_pct : float
+            조정 비율 (Guyton-Klinger only)
+        freeze_threshold : float
+            동결 기준 (Guyton-Klinger only)
+        inflation_rate : float
+            인플레이션율
+        v0 : float
+            초기 NAV
+
+        Returns
+        -------
+        pd.DataFrame
+            일별 데이터
+        """
+        # ----------------------------------------------------------
+        # 입력 검증 및 인덱스 설정
+        # ----------------------------------------------------------
+        start_date = pd.Timestamp(start_date)
+        if start_date not in self.dates:
+            valid = self.dates[self.dates >= start_date]
+            if len(valid) == 0:
+                raise ValueError(f"시작일 {start_date} 이후 거래일이 없습니다.")
+            start_date = valid[0]
+
+        start_idx = self.dates.get_loc(start_date)
+        end_idx = self._get_end_index(start_idx, horizon_years)
+        if end_idx is None:
+            raise ValueError(
+                f"시작일 {start_date.date()}로부터 {horizon_years}년 후 데이터가 없습니다."
+            )
+
+        # ----------------------------------------------------------
+        # 자산군별 초기 NAV 및 벤치마크 컬럼 준비
+        # ----------------------------------------------------------
+        asset_groups = self._build_asset_groups(portfolio)
+
+        # 그룹별 초기 NAV (가중치 합 × v0)
+        group_navs = {
+            g: v0 * sum(w for _, w in members)
+            for g, members in asset_groups.items()
+        }
+
+        # 일별 수익률 배열 미리 로드 (성능)
+        n_days = end_idx - start_idx + 1
+        group_returns = {}
+        group_weights_norm = {}
+        for g, members in asset_groups.items():
+            if not members:
+                group_returns[g] = None
+                group_weights_norm[g] = np.array([])
+                continue
+            cols = [col for col, _ in members]
+            wts = np.array([w for _, w in members])
+            group_weights_norm[g] = wts / wts.sum()
+            group_returns[g] = self.returns[cols].iloc[start_idx:end_idx + 1].values
+
+        # ----------------------------------------------------------
+        # 전략 객체 생성
+        # ----------------------------------------------------------
+        if strategy == 'guardrails':
+            strategy_obj = GuardrailsWithdrawal(initial_wr, guardrail_width, inflation_rate)
+        elif strategy == 'guyton_klinger':
+            strategy_obj = GuytonKlingerWithdrawal(
+                initial_wr, guardrail_width, adjustment_pct,
+                freeze_threshold, inflation_rate
+            )
+        else:
+            raise ValueError(f"Unknown strategy: '{strategy}'. Use 'guardrails' or 'guyton_klinger'.")
+
+        # ----------------------------------------------------------
+        # 일별 시뮬레이션
+        # ----------------------------------------------------------
+        period_month_starts = self.month_starts.iloc[start_idx:end_idx + 1].values
+        period_dates = self.dates[start_idx:end_idx + 1]
+
+        # 그룹 내 개별 자산별 NAV 추적 (비례 인출 정확도를 위해)
+        asset_navs = {}
+        for g, members in asset_groups.items():
+            if not members:
+                asset_navs[g] = np.array([])
+            else:
+                asset_navs[g] = group_navs[g] * group_weights_norm[g]
+
+        Total_NAV = v0
+        withdrawal = v0 * initial_wr / 12
+        month_counter = 0
+        prev_nav = v0  # Guyton-Klinger 연간 수익률 추적용
+
+        daily_data = []
+
+        for day_idx in range(n_days):
+            date = period_dates[day_idx]
+            is_month_start = bool(period_month_starts[day_idx])
+            is_year_start = (
+                is_month_start
+                and day_idx > 0
+                and date.month == 1
+            )
+
+            # --------------------------------------------------------
+            # 수익률 적용 (첫 날 제외)
+            # --------------------------------------------------------
+            if day_idx > 0:
+                for g, members in asset_groups.items():
+                    if not members:
+                        continue
+                    daily_rets = group_returns[g][day_idx]
+                    asset_navs[g] = asset_navs[g] * (1 + daily_rets)
+                    asset_navs[g] = np.maximum(asset_navs[g], 0.0)
+
+                for g in group_navs:
+                    group_navs[g] = float(asset_navs[g].sum()) if len(asset_navs[g]) > 0 else 0.0
+                Total_NAV = sum(group_navs.values())
+
+            # --------------------------------------------------------
+            # 월초 처리: 인출액 계산 및 실행
+            # --------------------------------------------------------
+            if is_month_start:
+                if strategy == 'guardrails':
+                    withdrawal = strategy_obj.calculate_withdrawal(
+                        Total_NAV, withdrawal, month_counter
+                    )
+                else:  # guyton_klinger
+                    portfolio_return = (
+                        (Total_NAV - prev_nav) / prev_nav
+                        if prev_nav > 0 else 0.0
+                    )
+                    withdrawal = strategy_obj.calculate_withdrawal(
+                        Total_NAV, withdrawal, month_counter, portfolio_return
+                    )
+
+                # 자산군별 비례 인출
+                if Total_NAV > 0:
+                    for g in asset_groups:
+                        if len(asset_navs[g]) == 0:
+                            continue
+                        group_withdrawal = withdrawal * (group_navs[g] / Total_NAV)
+                        g_sum = asset_navs[g].sum()
+                        if g_sum > 0:
+                            asset_navs[g] -= group_withdrawal * (asset_navs[g] / g_sum)
+                            asset_navs[g] = np.maximum(asset_navs[g], 0.0)
+
+                    for g in group_navs:
+                        group_navs[g] = float(asset_navs[g].sum()) if len(asset_navs[g]) > 0 else 0.0
+                    Total_NAV = sum(group_navs.values())
+
+                # Guyton-Klinger: 연간 주기마다 prev_nav 갱신
+                if strategy == 'guyton_klinger' and month_counter > 0 and month_counter % 12 == 0:
+                    prev_nav = Total_NAV
+
+                month_counter += 1
+
+            # --------------------------------------------------------
+            # 행 기록
+            # --------------------------------------------------------
+            cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
+            current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
+
+            if current_wr > strategy_obj.upper_guardrail:
+                status = 'Upper_Breach'
+            elif current_wr < strategy_obj.lower_guardrail:
+                status = 'Lower_Breach'
+            else:
+                status = 'Normal'
+
+            daily_data.append({
+                'Date': date,
+                'Day_Index': day_idx,
+                'Total_NAV': round(Total_NAV, 8),
+                'NAV_Korean_Equity': round(group_navs['Korean_Equity'], 8),
+                'NAV_US_Growth': round(group_navs['US_Growth'], 8),
+                'NAV_Bond': round(group_navs['Bond'], 8),
+                'NAV_Gold': round(group_navs['Gold'], 8),
+                'Cumulative_Return': round(cumulative_return, 8),
+                'Withdrawal_Amount': round(withdrawal, 8) if is_month_start else 0.0,
+                'Monthly_Withdrawal': round(withdrawal, 8),
+                'Current_WR': round(current_wr, 8),
+                'Upper_Guardrail': strategy_obj.upper_guardrail,
+                'Lower_Guardrail': strategy_obj.lower_guardrail,
+                'Is_Month_Start': is_month_start,
+                'Is_Year_Start': is_year_start,
+                'Guardrail_Status': status,
+                'Year_Month': f"{date.year}-{date.month:02d}",
+            })
+
+        return pd.DataFrame(daily_data)
