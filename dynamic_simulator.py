@@ -843,6 +843,12 @@ class DynamicWithdrawalSimulator:
             else:
                 asset_returns[display_name] = np.zeros(n_days)
 
+        # 복합 포트폴리오 수익률 (백테스트와 동일한 고정 가중치 daily rebalancing)
+        portfolio_returns = self.returns[portfolio].iloc[start_idx:end_idx + 1].values
+
+        # 자산별 가중치 저장 (daily rebalancing용)
+        asset_weight_map = {display_name: weight for _, weight, display_name in assets_list}
+
         # ----------------------------------------------------------
         # 전략 객체 생성
         # ----------------------------------------------------------
@@ -884,12 +890,13 @@ class DynamicWithdrawalSimulator:
             # 수익률 적용 (첫 날 제외)
             # --------------------------------------------------------
             if day_idx > 0:
-                for display_name in asset_navs:
-                    daily_ret = asset_returns[display_name][day_idx]
-                    asset_navs[display_name] = asset_navs[display_name] * (1 + daily_ret)
-                    asset_navs[display_name] = max(asset_navs[display_name], 0.0)
+                daily_ret = portfolio_returns[day_idx]
+                Total_NAV = Total_NAV * (1 + daily_ret)
+                Total_NAV = max(Total_NAV, 0.0)
 
-                Total_NAV = sum(asset_navs.values())
+                # 개별 자산 NAV = Total_NAV × 고정 가중치 (daily rebalancing)
+                for display_name in asset_navs:
+                    asset_navs[display_name] = Total_NAV * asset_weight_map[display_name]
 
             # --------------------------------------------------------
             # 월초 처리: 인출액 계산 및 실행
@@ -912,14 +919,13 @@ class DynamicWithdrawalSimulator:
                         Total_NAV, withdrawal, month_counter, portfolio_return
                     )
 
-                # 8개 자산에서 비례 인출
+                # 인출 실행 (백테스트와 동일)
                 if Total_NAV > 0:
-                    for display_name in asset_navs:
-                        asset_withdrawal = withdrawal * (asset_navs[display_name] / Total_NAV)
-                        asset_navs[display_name] -= asset_withdrawal
-                        asset_navs[display_name] = max(asset_navs[display_name], 0.0)
+                    Total_NAV = max(Total_NAV - withdrawal, 0.0)
 
-                    Total_NAV = sum(asset_navs.values())
+                    # 인출 후 개별 자산 NAV 갱신 (고정 가중치)
+                    for display_name in asset_navs:
+                        asset_navs[display_name] = Total_NAV * asset_weight_map[display_name]
 
                 # Guyton-Klinger: 연간 주기마다 prev_nav 갱신
                 if strategy == 'guyton_klinger' and month_counter > 0 and month_counter % 12 == 0:
