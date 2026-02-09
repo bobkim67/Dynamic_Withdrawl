@@ -902,15 +902,7 @@ class DynamicWithdrawalSimulator:
             )
 
             # --------------------------------------------------------
-            # 수익률 적용 (첫 날 제외)
-            # --------------------------------------------------------
-            if day_idx > 0:
-                daily_ret = portfolio_returns[day_idx]
-                Total_NAV = Total_NAV * (1 + daily_ret)
-                Total_NAV = max(Total_NAV, 0.0)
-
-            # --------------------------------------------------------
-            # 월초 처리: 인출액 계산 및 실행
+            # 월초 처리: 인출 먼저 실행
             # --------------------------------------------------------
             if is_month_start:
                 if strategy == 'guyton_klinger':
@@ -935,6 +927,14 @@ class DynamicWithdrawalSimulator:
                     prev_nav = Total_NAV
 
                 month_counter += 1
+
+            # --------------------------------------------------------
+            # 수익률 적용 (첫 날 제외)
+            # --------------------------------------------------------
+            if day_idx > 0:
+                daily_ret = portfolio_returns[day_idx]
+                Total_NAV = Total_NAV * (1 + daily_ret)
+                Total_NAV = max(Total_NAV, 0.0)
 
             # --------------------------------------------------------
             # 행 기록
