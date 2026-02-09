@@ -763,6 +763,30 @@ class DynamicWithdrawalSimulator:
 
         return result
 
+    # 자산 표시명 → 원본 data 컬럼명 매핑 (가격 지수용)
+    PRICE_COL_MAP = {
+        'Korean_Equity':          '국내주식',
+        'US_Growth':              '미국성장주',
+        'Korean_Bond_Composite':  '국내중기채',
+        'Korean_Bond_10Y':        '국내장기채',
+        'EM_Dollar_Bond':         '신흥국달러채권',
+        'US_Bond':                '미국국채',
+        'Global_ex_US_Bond':      '미국외국채',
+        'Gold':                   '금',
+    }
+
+    # 포트폴리오 가중치 매핑 (한글 → 영문)
+    WEIGHT_MAP = {
+        '한국주식': 'Korean_Equity',
+        '미국성장주': 'US_Growth',
+        '한국종합채권': 'Korean_Bond_Composite',
+        '한국국고채10년': 'Korean_Bond_10Y',
+        '신흥국달러채권': 'EM_Dollar_Bond',
+        '미국채권': 'US_Bond',
+        '미국외글로벌채권': 'Global_ex_US_Bond',
+        '금': 'Gold',
+    }
+
     def get_single_path_detail(self,
                                portfolio: str,
                                start_date,
@@ -773,9 +797,15 @@ class DynamicWithdrawalSimulator:
                                adjustment_pct: float = 0.10,
                                freeze_threshold: float = -0.10,
                                inflation_rate: float = 0.02,
-                               v0: float = 100.0) -> pd.DataFrame:
+                               v0: float = 100.0,
+                               price_data: pd.DataFrame = None) -> pd.DataFrame:
         """
         특정 시작일의 일별 경로 데이터 반환
+
+        기존 백테스트와 동일한 로직 사용:
+        - portfolio_returns = self.returns[portfolio] (수익률의 가중평균)
+        - Total_NAV만 추적 (개별 자산 NAV 제거)
+        - Price Index 및 Weight 컬럼 포함 (Excel 검증용)
 
         Parameters
         ----------
@@ -799,11 +829,14 @@ class DynamicWithdrawalSimulator:
             인플레이션율
         v0 : float
             초기 NAV
+        price_data : pd.DataFrame, optional
+            원본 가격 지수 데이터 (Price_* 컬럼 추가용).
+            None이면 Price_* 컬럼 생략.
 
         Returns
         -------
         pd.DataFrame
-            일별 데이터 (8개 개별 자산 NAV 포함)
+            일별 데이터 (Price Index, Weight 포함)
         """
         # ----------------------------------------------------------
         # 입력 검증 및 인덱스 설정
@@ -823,31 +856,13 @@ class DynamicWithdrawalSimulator:
             )
 
         # ----------------------------------------------------------
-        # 개별 자산 정보 준비 (8개)
+        # 자산 가중치 정보 준비 (Price/Weight 컬럼용)
         # ----------------------------------------------------------
         assets_list = self._build_asset_groups(portfolio)  # List[Tuple[col, weight, name]]
 
-        # 개별 자산별 초기 NAV 할당
-        asset_navs = {}
-        asset_col_map = {}  # display_name → col_name
-        for col_name, weight, display_name in assets_list:
-            asset_navs[display_name] = v0 * weight
-            asset_col_map[display_name] = col_name
-
-        # 일별 수익률 배열 미리 로드
+        # 포트폴리오 수익률 (백테스트와 동일)
         n_days = end_idx - start_idx + 1
-        asset_returns = {}
-        for col_name, weight, display_name in assets_list:
-            if weight > 0:
-                asset_returns[display_name] = self.returns[col_name].iloc[start_idx:end_idx + 1].values
-            else:
-                asset_returns[display_name] = np.zeros(n_days)
-
-        # 복합 포트폴리오 수익률 (백테스트와 동일한 고정 가중치 daily rebalancing)
         portfolio_returns = self.returns[portfolio].iloc[start_idx:end_idx + 1].values
-
-        # 자산별 가중치 저장 (daily rebalancing용)
-        asset_weight_map = {display_name: weight for _, weight, display_name in assets_list}
 
         # ----------------------------------------------------------
         # 전략 객체 생성
@@ -894,23 +909,11 @@ class DynamicWithdrawalSimulator:
                 Total_NAV = Total_NAV * (1 + daily_ret)
                 Total_NAV = max(Total_NAV, 0.0)
 
-                # 개별 자산 NAV = Total_NAV × 고정 가중치 (daily rebalancing)
-                for display_name in asset_navs:
-                    asset_navs[display_name] = Total_NAV * asset_weight_map[display_name]
-
             # --------------------------------------------------------
             # 월초 처리: 인출액 계산 및 실행
             # --------------------------------------------------------
             if is_month_start:
-                if strategy == 'fixed':
-                    withdrawal = strategy_obj.calculate_withdrawal(
-                        Total_NAV, withdrawal, month_counter
-                    )
-                elif strategy == 'guardrails':
-                    withdrawal = strategy_obj.calculate_withdrawal(
-                        Total_NAV, withdrawal, month_counter
-                    )
-                else:  # guyton_klinger
+                if strategy == 'guyton_klinger':
                     portfolio_return = (
                         (Total_NAV - prev_nav) / prev_nav
                         if prev_nav > 0 else 0.0
@@ -918,14 +921,14 @@ class DynamicWithdrawalSimulator:
                     withdrawal = strategy_obj.calculate_withdrawal(
                         Total_NAV, withdrawal, month_counter, portfolio_return
                     )
+                else:
+                    withdrawal = strategy_obj.calculate_withdrawal(
+                        Total_NAV, withdrawal, month_counter
+                    )
 
-                # 인출 실행 (백테스트와 동일)
+                # 인출 실행
                 if Total_NAV > 0:
                     Total_NAV = max(Total_NAV - withdrawal, 0.0)
-
-                    # 인출 후 개별 자산 NAV 갱신 (고정 가중치)
-                    for display_name in asset_navs:
-                        asset_navs[display_name] = Total_NAV * asset_weight_map[display_name]
 
                 # Guyton-Klinger: 연간 주기마다 prev_nav 갱신
                 if strategy == 'guyton_klinger' and month_counter > 0 and month_counter % 12 == 0:
@@ -934,7 +937,7 @@ class DynamicWithdrawalSimulator:
                 month_counter += 1
 
             # --------------------------------------------------------
-            # 행 기록 (8개 자산 NAV 포함)
+            # 행 기록
             # --------------------------------------------------------
             cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
             current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
@@ -946,18 +949,10 @@ class DynamicWithdrawalSimulator:
             else:
                 status = 'Normal'
 
-            daily_data.append({
+            row = {
                 'Date': date,
                 'Day_Index': day_idx,
                 'Total_NAV': round(Total_NAV, 8),
-                'NAV_Korean_Equity': round(asset_navs['Korean_Equity'], 8),
-                'NAV_US_Growth': round(asset_navs['US_Growth'], 8),
-                'NAV_Korean_Bond_Composite': round(asset_navs['Korean_Bond_Composite'], 8),
-                'NAV_Korean_Bond_10Y': round(asset_navs['Korean_Bond_10Y'], 8),
-                'NAV_EM_Dollar_Bond': round(asset_navs['EM_Dollar_Bond'], 8),
-                'NAV_US_Bond': round(asset_navs['US_Bond'], 8),
-                'NAV_Global_ex_US_Bond': round(asset_navs['Global_ex_US_Bond'], 8),
-                'NAV_Gold': round(asset_navs['Gold'], 8),
                 'Cumulative_Return': round(cumulative_return, 8),
                 'Withdrawal_Amount': round(withdrawal, 8) if is_month_start else 0.0,
                 'Monthly_Withdrawal': round(withdrawal, 8),
@@ -968,148 +963,17 @@ class DynamicWithdrawalSimulator:
                 'Is_Year_Start': is_year_start,
                 'Guardrail_Status': status,
                 'Year_Month': f"{date.year}-{date.month:02d}",
-            })
+            }
+
+            # Price Index 컬럼 (원본 가격 데이터가 있을 때만)
+            if price_data is not None:
+                for display_name, data_col in self.PRICE_COL_MAP.items():
+                    row[f'Price_{display_name}'] = price_data.loc[date, data_col]
+
+            # Weight 컬럼 (% 단위, 고정 가중치)
+            for _, weight, display_name in assets_list:
+                row[f'Weight_{display_name}'] = round(weight * 100, 2)
+
+            daily_data.append(row)
 
         return pd.DataFrame(daily_data)
-
-
-# ============================================================
-# 백테스트 일관성 검증 유틸리티
-# ============================================================
-
-def validate_backtest_consistency(simulator: DynamicWithdrawalSimulator,
-                                 backtest_results: pd.DataFrame,
-                                 portfolio: str,
-                                 strategy: str,
-                                 horizon_years: int,
-                                 initial_wr: float,
-                                 guardrail_width: float = 0.20,
-                                 adjustment_pct: float = 0.10,
-                                 freeze_threshold: float = -0.10,
-                                 inflation_rate: float = 0.02,
-                                 v0: float = 100.0,
-                                 sample_size: int = 5,
-                                 tolerance: float = 1e-6) -> Dict[str, any]:
-    """
-    백테스트 결과와 single_path_detail 결과의 일관성 검증
-
-    Parameters
-    ----------
-    simulator : DynamicWithdrawalSimulator
-    backtest_results : pd.DataFrame
-        run_*_backtest의 반환 DataFrame
-    portfolio : str
-        포트폴리오 이름
-    strategy : str
-        'fixed', 'guardrails', 'guyton_klinger'
-    sample_size : int
-        검증할 샘플 경로 개수 (기본값 5)
-    tolerance : float
-        허용 오차 (기본값 1e-6)
-
-    Returns
-    -------
-    dict : 검증 결과
-        {
-            'all_passed': bool,
-            'n_tested': int,
-            'n_passed': int,
-            'failed_cases': List[dict],  # 실패한 경우의 상세 정보
-        }
-    """
-    failed_cases = []
-    n_tested = 0
-    n_passed = 0
-
-    # 샘플 선택 (첫 sample_size개)
-    sample_indices = range(min(sample_size, len(backtest_results)))
-
-    for idx in sample_indices:
-        n_tested += 1
-        row = backtest_results.iloc[idx]
-        start_date = row['start_date']
-
-        try:
-            # 1. 백테스트 결과 추출
-            backtest_nav_path = row['nav_path']
-            backtest_withdrawal_path = row['withdrawal_path']
-            backtest_terminal = row['terminal_nav']
-
-            # 2. single_path_detail 호출
-            detail_df = simulator.get_single_path_detail(
-                portfolio=portfolio,
-                start_date=start_date,
-                strategy=strategy,
-                horizon_years=horizon_years,
-                initial_wr=initial_wr,
-                guardrail_width=guardrail_width,
-                adjustment_pct=adjustment_pct,
-                freeze_threshold=freeze_threshold,
-                inflation_rate=inflation_rate,
-                v0=v0
-            )
-
-            # 3. 월초 데이터만 추출
-            month_starts = detail_df[detail_df['Is_Month_Start'] == True].copy()
-            detail_nav_path = month_starts['Total_NAV'].values
-            detail_withdrawal_path = month_starts['Monthly_Withdrawal'].values
-            detail_terminal = detail_df['Total_NAV'].iloc[-1]
-
-            # 4. 검증
-            # 4.1 길이 검증
-            if len(backtest_nav_path) != len(detail_nav_path):
-                failed_cases.append({
-                    'idx': idx,
-                    'start_date': start_date,
-                    'error': f"Length mismatch: backtest={len(backtest_nav_path)}, detail={len(detail_nav_path)}"
-                })
-                continue
-
-            # 4.2 NAV 경로 검증
-            nav_diff = np.abs(backtest_nav_path - detail_nav_path)
-            max_nav_diff = nav_diff.max()
-            if max_nav_diff >= tolerance:
-                failed_cases.append({
-                    'idx': idx,
-                    'start_date': start_date,
-                    'error': f"NAV path mismatch: max_diff={max_nav_diff:.10f}"
-                })
-                continue
-
-            # 4.3 인출액 경로 검증
-            withdrawal_diff = np.abs(backtest_withdrawal_path - detail_withdrawal_path)
-            max_withdrawal_diff = withdrawal_diff.max()
-            if max_withdrawal_diff >= tolerance:
-                failed_cases.append({
-                    'idx': idx,
-                    'start_date': start_date,
-                    'error': f"Withdrawal path mismatch: max_diff={max_withdrawal_diff:.10f}"
-                })
-                continue
-
-            # 4.4 Terminal NAV 검증
-            terminal_diff = abs(backtest_terminal - detail_terminal)
-            if terminal_diff >= tolerance:
-                failed_cases.append({
-                    'idx': idx,
-                    'start_date': start_date,
-                    'error': f"Terminal NAV mismatch: diff={terminal_diff:.10f}"
-                })
-                continue
-
-            # 모든 검증 통과
-            n_passed += 1
-
-        except Exception as e:
-            failed_cases.append({
-                'idx': idx,
-                'start_date': start_date,
-                'error': f"Exception: {str(e)}"
-            })
-
-    return {
-        'all_passed': n_passed == n_tested,
-        'n_tested': n_tested,
-        'n_passed': n_passed,
-        'failed_cases': failed_cases
-    }
