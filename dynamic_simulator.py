@@ -108,6 +108,7 @@ class GuardrailsWithdrawal:
         self.upper_guardrail = initial_wr * (1 + guardrail_width)
         self.lower_guardrail = initial_wr * (1 - guardrail_width)
         self.inflation_rate = inflation_rate
+        self.base_withdrawal = None  # 첫 달 인출액 저장용 (고정)
         self.current_wr = initial_wr  # 추적용
 
     def calculate_withdrawal(self,
@@ -130,31 +131,28 @@ class GuardrailsWithdrawal:
         -------
         float : 이번 달 인출액
         """
-        # 첫 달: 초기 인출액 설정
+        # 첫 달: 초기 인출액 설정 및 저장
         if month_idx == 0:
-            self.current_wr = self.initial_wr
-            return current_nav * self.initial_wr / 12
+            self.base_withdrawal = current_nav * self.initial_wr / 12
+            return self.base_withdrawal
 
-        # 기본 인출액 (이전 달과 동일)
-        base_withdrawal = previous_withdrawal
+        # 원래 인출액 사용 (캡핑되어도 변경되지 않음)
+        base = self.base_withdrawal
 
         # 매월 Guardrail 한도 계산
         max_withdrawal = current_nav * self.upper_guardrail / 12
         min_withdrawal = current_nav * self.lower_guardrail / 12
 
-        # 한도 적용 (단순 캡핑)
-        if base_withdrawal > max_withdrawal:
+        # 한도 적용 (단순 캡핑, base는 변경 안 됨)
+        if base > max_withdrawal:
             # 상한 초과: 상한으로 제한
-            self.current_wr = self.upper_guardrail
             return max_withdrawal
-        elif base_withdrawal < min_withdrawal:
+        elif base < min_withdrawal:
             # 하한 미만: 하한으로 제한
-            self.current_wr = self.lower_guardrail
             return min_withdrawal
         else:
-            # 정상 범위: 기본 인출액 유지
-            self.current_wr = (base_withdrawal * 12) / current_nav if current_nav > 0 else 0
-            return base_withdrawal
+            # 정상 범위: 원래 인출액 유지
+            return base
 
 
 class GuytonKlingerWithdrawal:
