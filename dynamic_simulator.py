@@ -71,11 +71,6 @@ class FixedWithdrawal:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
-        # 매년 초: NAV 기준 재계산 (인플레이션 조정 제거)
-        if month_idx % 12 == 0:
-            self.current_wr = self.initial_wr
-            return current_nav * self.initial_wr / 12
-
         # 월 중에는 이전 인출액 유지
         return previous_withdrawal
 
