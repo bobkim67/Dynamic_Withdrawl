@@ -82,12 +82,14 @@ class FixedWithdrawal:
 
 class GuardrailsWithdrawal:
     """
-    Guardrails 전략: NAV 기준 즉각 반응 방식
+    Guardrails 전략: 인출액 한도 제한 방식
 
     핵심 원리:
-    - 인출률이 상한/하한을 벗어나면 NAV × Guardrail rate로 즉시 재계산
-    - 한 번의 조정으로 정상 범위 복귀
-    - 시장 변화에 빠르게 반응
+    - 매월 기본 인출액은 동일하게 유지
+    - 인출액이 Guardrail 한도를 초과하면 한도로 제한 (캡핑)
+    - 상한 = NAV × upper_guardrail / 12
+    - 하한 = NAV × lower_guardrail / 12
+    - 매월 NAV 기준으로 한도를 재계산하여 포트폴리오 보호
     """
 
     def __init__(self,
@@ -132,39 +134,31 @@ class GuardrailsWithdrawal:
         -------
         float : 이번 달 인출액
         """
-        # 첫 달
+        # 첫 달: 초기 인출액 설정
         if month_idx == 0:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
-        # 연간 인출 시점에만 조정 체크 (매년 초)
-        if month_idx % 12 == 0:
-            # 작년 연간 인출액
-            annual_withdrawal_last_year = previous_withdrawal * 12
+        # 기본 인출액 (이전 달과 동일)
+        base_withdrawal = previous_withdrawal
 
-            # 현재 인출률 = 작년 연간 인출액 / 현재 NAV
-            current_wr = annual_withdrawal_last_year / current_nav if current_nav > 0 else 0
+        # 매월 Guardrail 한도 계산
+        max_withdrawal = current_nav * self.upper_guardrail / 12
+        min_withdrawal = current_nav * self.lower_guardrail / 12
 
-            if current_wr > self.upper_guardrail:
-                # 상한 위반: NAV 기준 재계산
-                new_annual_withdrawal = current_nav * self.upper_guardrail
-                self.current_wr = self.upper_guardrail
-                return new_annual_withdrawal / 12
-
-            elif current_wr < self.lower_guardrail:
-                # 하한 위반: NAV 기준 재계산
-                new_annual_withdrawal = current_nav * self.lower_guardrail
-                self.current_wr = self.lower_guardrail
-                return new_annual_withdrawal / 12
-
-            else:
-                # 정상 범위: NAV 기준 인출 (인플레이션 조정 제거)
-                self.current_wr = self.initial_wr
-                return current_nav * self.initial_wr / 12
-
+        # 한도 적용 (단순 캡핑)
+        if base_withdrawal > max_withdrawal:
+            # 상한 초과: 상한으로 제한
+            self.current_wr = self.upper_guardrail
+            return max_withdrawal
+        elif base_withdrawal < min_withdrawal:
+            # 하한 미만: 하한으로 제한
+            self.current_wr = self.lower_guardrail
+            return min_withdrawal
         else:
-            # 월 중에는 이전 인출액 유지
-            return previous_withdrawal
+            # 정상 범위: 기본 인출액 유지
+            self.current_wr = (base_withdrawal * 12) / current_nav if current_nav > 0 else 0
+            return base_withdrawal
 
 
 class GuytonKlingerWithdrawal:
