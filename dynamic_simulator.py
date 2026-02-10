@@ -737,13 +737,13 @@ class DynamicWithdrawalSimulator:
         month_counter = 0
         prev_nav = v0  # Guyton-Klinger 연간 수익률 추적용
         nav_no_withdrawal = v0  # 인출 없는 순수 포트폴리오 NAV 추적용
-        prev_nav_no_withdrawal = v0  # 전일 인출 없는 NAV (일별 수익률 계산용)
 
         # Option A: 월간 유지되는 Guardrail 상태 및 Adjust 모드 정보
         current_guardrail_status = 'Normal'
         adjust_triggered = 'None'
         adjust_monthly_return = 0.0
         adjust_applied_pct = 0.0
+        prev_month_nav_for_display = v0  # 전월 NAV (엑셀 표시용, 월초에만 업데이트)
 
         daily_data = []
 
@@ -762,6 +762,10 @@ class DynamicWithdrawalSimulator:
             nav_before_withdrawal = Total_NAV  # 인출 전 NAV 저장 (상태 판정용)
 
             if is_month_start:
+                # === 전월 NAV 저장 (월초에만, 엑셀 표시용) ===
+                if month_counter > 0:
+                    prev_month_nav_for_display = nav_no_withdrawal
+
                 # === Adjust 모드 trigger 정보 계산 (calculate_withdrawal 호출 전에 먼저) ===
                 if strategy == 'guardrails' and strategy_obj.adjustment_mode == 'adjust' and month_counter > 0:
                     # 전월 대비 월간 수익률 계산 (calculate_withdrawal 호출 전 상태 사용)
@@ -832,27 +836,16 @@ class DynamicWithdrawalSimulator:
             # --------------------------------------------------------
             cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
 
-            # Portfolio_return_no_withdrawal: 전일 대비 일별 수익률
-            if day_idx == 0:
-                portfolio_return_no_withdrawal = 0.0
-            else:
-                portfolio_return_no_withdrawal = (
-                    (nav_no_withdrawal - prev_nav_no_withdrawal) / prev_nav_no_withdrawal
-                    if prev_nav_no_withdrawal > 0 else 0.0
-                )
-
             # Current_WR 계산 (참고용, 매일 업데이트)
             current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
-
-            # 전일 NAV 업데이트 (다음 날 일별 수익률 계산용)
-            prev_nav_no_withdrawal = nav_no_withdrawal
 
             row = {
                 'Date': date,
                 'Day_Index': day_idx,
                 'Total_NAV': round(Total_NAV, 8),
                 'Cumulative_Return': round(cumulative_return, 8),
-                'Portfolio_Return_No_Withdrawal': round(portfolio_return_no_withdrawal, 8),
+                'NAV_No_Withdrawal': round(nav_no_withdrawal, 8),
+                'Prev_Month_NAV_No_Withdrawal': round(prev_month_nav_for_display, 8),
                 'Withdrawal_Amount': round(withdrawal, 8) if is_month_start else 0.0,
                 'Current_WR': round(current_wr, 8),
                 'Upper_Guardrail': strategy_obj.upper_guardrail,
