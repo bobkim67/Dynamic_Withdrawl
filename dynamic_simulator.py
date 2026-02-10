@@ -71,6 +71,7 @@ class FixedWithdrawal:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
+
         # 월 중에는 이전 인출액 유지
         return previous_withdrawal
 
