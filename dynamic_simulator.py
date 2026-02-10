@@ -82,16 +82,22 @@ class GuardrailsWithdrawal:
 
     핵심 원리:
     - 매월 기본 인출액은 동일하게 유지
-    - 인출액이 Guardrail 한도를 초과하면 한도로 제한 (캡핑)
+    - 인출액이 Guardrail 한도를 초과하면 조정
     - 상한 = NAV × upper_guardrail / 12
     - 하한 = NAV × lower_guardrail / 12
     - 매월 NAV 기준으로 한도를 재계산하여 포트폴리오 보호
+
+    조정 모드:
+    - 'cap': 한도로 정확히 제한 (예: 상한 초과 시 상한값으로 캡핑)
+    - 'adjust': 고정 비율만큼 조정 (예: 상한 초과 시 기본액의 -10% 조정)
     """
 
     def __init__(self,
                  initial_wr: float,
                  guardrail_width: float = 0.20,
-                 inflation_rate: float = 0.02):
+                 inflation_rate: float = 0.02,
+                 adjustment_mode: str = 'cap',
+                 adjustment_pct: float = 0.10):
         """
         Parameters
         ----------
@@ -102,12 +108,22 @@ class GuardrailsWithdrawal:
             상한 = initial_wr × (1 + width)
             하한 = initial_wr × (1 - width)
         inflation_rate : float
-            연간 인플레이션율 (기본값 2%)
+            연간 인플레이션율 (기본값 2%, 사용 안 함)
+        adjustment_mode : str
+            조정 모드 ('cap' 또는 'adjust')
+            - 'cap': 한도로 캡핑 (기본값)
+            - 'adjust': 고정 비율로 조정
+        adjustment_pct : float
+            조정 비율 (adjustment_mode='adjust'일 때 사용, 기본값 10%)
+            상한 위반 시: 기본액 × (1 - adjustment_pct)
+            하한 위반 시: 기본액 × (1 + adjustment_pct)
         """
         self.initial_wr = initial_wr
         self.upper_guardrail = initial_wr * (1 + guardrail_width)
         self.lower_guardrail = initial_wr * (1 - guardrail_width)
         self.inflation_rate = inflation_rate
+        self.adjustment_mode = adjustment_mode
+        self.adjustment_pct = adjustment_pct
         self.base_withdrawal = None  # 첫 달 인출액 저장용 (고정)
         self.current_wr = initial_wr  # 추적용
 
@@ -143,16 +159,39 @@ class GuardrailsWithdrawal:
         max_withdrawal = current_nav * self.upper_guardrail / 12
         min_withdrawal = current_nav * self.lower_guardrail / 12
 
-        # 한도 적용 (단순 캡핑, base는 변경 안 됨)
-        if base > max_withdrawal:
-            # 상한 초과: 상한으로 제한
-            return max_withdrawal
-        elif base < min_withdrawal:
-            # 하한 미만: 하한으로 제한
-            return min_withdrawal
+        # 조정 모드에 따라 처리
+        if self.adjustment_mode == 'cap':
+            # Cap 모드: 한도로 캡핑
+            if base > max_withdrawal:
+                # 상한 초과: 상한으로 제한
+                return max_withdrawal
+            elif base < min_withdrawal:
+                # 하한 미만: 하한으로 제한
+                return min_withdrawal
+            else:
+                # 정상 범위: 원래 인출액 유지
+                return base
+
+        elif self.adjustment_mode == 'adjust':
+            # Adjust 모드: 고정 비율로 조정
+            if base > max_withdrawal:
+                # 상한 초과: 기본액에서 adjustment_pct만큼 감액
+                return base * (1 - self.adjustment_pct)
+            elif base < min_withdrawal:
+                # 하한 미만: 기본액에서 adjustment_pct만큼 증액
+                return base * (1 + self.adjustment_pct)
+            else:
+                # 정상 범위: 원래 인출액 유지
+                return base
+
         else:
-            # 정상 범위: 원래 인출액 유지
-            return base
+            # 알 수 없는 모드: 기본값(cap)으로 처리
+            if base > max_withdrawal:
+                return max_withdrawal
+            elif base < min_withdrawal:
+                return min_withdrawal
+            else:
+                return base
 
 
 class GuytonKlingerWithdrawal:
@@ -298,6 +337,8 @@ class DynamicWithdrawalSimulator:
                                 initial_wr: float,
                                 guardrail_width: float = 0.20,
                                 inflation_rate: float = 0.02,
+                                adjustment_mode: str = 'cap',
+                                adjustment_pct: float = 0.10,
                                 v0: float = 100.0) -> Tuple[np.ndarray, np.ndarray, float]:
         """
         Guardrails 전략 단일 경로 시뮬레이션
@@ -311,7 +352,10 @@ class DynamicWithdrawalSimulator:
         terminal_nav : float
             최종 NAV
         """
-        strategy = GuardrailsWithdrawal(initial_wr, guardrail_width, inflation_rate)
+        strategy = GuardrailsWithdrawal(
+            initial_wr, guardrail_width, inflation_rate,
+            adjustment_mode, adjustment_pct
+        )
 
         V = v0
         withdrawal = v0 * initial_wr / 12
@@ -769,6 +813,8 @@ class DynamicWithdrawalSimulator:
                                horizon_years: int = 10,
                                initial_wr: float = 0.05,
                                guardrail_width: float = 0.20,
+                               guardrail_adjustment_mode: str = 'cap',
+                               guardrail_adjustment_pct: float = 0.10,
                                adjustment_pct: float = 0.10,
                                freeze_threshold: float = -0.10,
                                inflation_rate: float = 0.02,
@@ -796,6 +842,12 @@ class DynamicWithdrawalSimulator:
             초기 인출률
         guardrail_width : float
             Guardrail 폭 (fixed에서는 무시)
+        guardrail_adjustment_mode : str
+            Guardrail 조정 모드 ('cap' 또는 'adjust', guardrails only)
+            - 'cap': 한도로 캡핑 (기본값)
+            - 'adjust': 고정 비율로 조정
+        guardrail_adjustment_pct : float
+            Guardrail 조정 비율 (guardrails + adjust 모드일 때만 사용)
         adjustment_pct : float
             조정 비율 (Guyton-Klinger only)
         freeze_threshold : float
@@ -845,7 +897,10 @@ class DynamicWithdrawalSimulator:
         if strategy == 'fixed':
             strategy_obj = FixedWithdrawal(initial_wr, inflation_rate)
         elif strategy == 'guardrails':
-            strategy_obj = GuardrailsWithdrawal(initial_wr, guardrail_width, inflation_rate)
+            strategy_obj = GuardrailsWithdrawal(
+                initial_wr, guardrail_width, inflation_rate,
+                guardrail_adjustment_mode, guardrail_adjustment_pct
+            )
         elif strategy == 'guyton_klinger':
             strategy_obj = GuytonKlingerWithdrawal(
                 initial_wr, guardrail_width, adjustment_pct,
