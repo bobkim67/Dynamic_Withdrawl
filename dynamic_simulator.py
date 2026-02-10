@@ -157,17 +157,18 @@ class GuardrailsWithdrawal:
 
 class GuytonKlingerWithdrawal:
     """
-    Guyton-Klinger 전략: 고정 비율 단계적 조정 + 추가 규칙
+    Guyton-Klinger 전략: 전월 포트폴리오 수익률 기반 인출액 조정
 
     핵심 원리:
-    - Guardrail 위반 시 이전 인출액 × (1 ± adjustment_pct) 고정 비율 조정
-    - 여러 번에 걸쳐 단계적 조정 가능
-    - 포트폴리오 수익률 < -10% 시 동결 (인플레이션 조정 안함)
+    - 매월 인출 전, 지난 달 포트폴리오 수익률(인출 없는 NAV 기준) 계산
+    - 이전 인출액에 동일 수익률을 반영하여 조정
+    - Guardrail 한도 내에서만 조정 (상/하한 캡핑)
 
-    규칙:
-    1. Guardrail Rule: 인출률이 상한/하한 벗어나면 고정 비율로 조정
-    2. Portfolio Management Rule: 작년 수익률 < -10%이면 동결
-    3. Normal: 정상 범위 & 정상 수익 → NAV 기준 인출
+    예시:
+    - 전월 포트폴리오 수익률 +2% → 인출액 +2% 조정
+    - 전월 포트폴리오 수익률 -3% → 인출액 -3% 조정
+    - 조정 후 상한 초과 시 → 상한으로 제한
+    - 조정 후 하한 미만 시 → 하한으로 제한
     """
 
     def __init__(self,
@@ -183,88 +184,77 @@ class GuytonKlingerWithdrawal:
             초기 연간 인출률 (예: 0.05 = 5%)
         guardrail_width : float
             Guardrail 폭 (예: 0.20 = ±20%)
-        adjustment_pct : float
-            조정 크기 (예: 0.10 = ±10%)
-        freeze_threshold : float
-            동결 기준 (예: -0.10 = -10%)
-            작년 포트폴리오 수익률이 이 값 아래면 동결
-        inflation_rate : float
-            연간 인플레이션율 (기본값 2%)
+        adjustment_pct : float (사용 안 함, 호환성 유지)
+            조정 크기
+        freeze_threshold : float (사용 안 함, 호환성 유지)
+            동결 기준
+        inflation_rate : float (사용 안 함, 호환성 유지)
+            연간 인플레이션율
         """
         self.initial_wr = initial_wr
         self.upper_guardrail = initial_wr * (1 + guardrail_width)
         self.lower_guardrail = initial_wr * (1 - guardrail_width)
-        self.adjustment_pct = adjustment_pct
-        self.freeze_threshold = freeze_threshold
-        self.inflation_rate = inflation_rate
-        self.previous_nav = None
+        self.adjustment_pct = adjustment_pct  # 호환성 유지
+        self.freeze_threshold = freeze_threshold  # 호환성 유지
+        self.inflation_rate = inflation_rate  # 호환성 유지
+        self.prev_month_nav_no_withdrawal = None  # 전월 시작 시점의 인출 없는 NAV
+        self.base_withdrawal = None  # 첫 달 인출액 저장용
         self.current_wr = initial_wr  # 추적용
 
     def calculate_withdrawal(self,
                            current_nav: float,
                            previous_withdrawal: float,
                            month_idx: int,
-                           portfolio_return: float = 0.0) -> float:
+                           nav_no_withdrawal: float = None) -> float:
         """
         매월 인출액 계산
 
         Parameters
         ----------
         current_nav : float
-            현재 포트폴리오 가치
+            현재 포트폴리오 가치 (인출 반영)
         previous_withdrawal : float
             직전 월 인출액
         month_idx : int
             현재 월 인덱스 (0-119)
-        portfolio_return : float
-            지난 12개월 포트폴리오 수익률 (month_idx % 12 == 0일 때 사용)
+        nav_no_withdrawal : float
+            현재 인출 없는 순수 포트폴리오 NAV
 
         Returns
         -------
         float : 이번 달 인출액
         """
-        # 첫 달
+        # 첫 달: 초기 인출액 설정
         if month_idx == 0:
-            self.previous_nav = current_nav
-            self.current_wr = self.initial_wr
-            return current_nav * self.initial_wr / 12
+            self.base_withdrawal = current_nav * self.initial_wr / 12
+            self.prev_month_nav_no_withdrawal = nav_no_withdrawal if nav_no_withdrawal else current_nav
+            return self.base_withdrawal
 
-        # 연간 인출 시점에만 조정 체크 (매년 초)
-        if month_idx % 12 == 0:
-            annual_withdrawal_last_year = previous_withdrawal * 12
-            current_wr = annual_withdrawal_last_year / current_nav if current_nav > 0 else 0
-
-            # Rule 1: Guardrail 위반 체크
-            if current_wr > self.upper_guardrail:
-                # 고정 비율로 감액
-                new_annual_withdrawal = annual_withdrawal_last_year * (1 - self.adjustment_pct)
-                self.current_wr = new_annual_withdrawal / current_nav if current_nav > 0 else 0
-                self.previous_nav = current_nav
-                return new_annual_withdrawal / 12
-
-            elif current_wr < self.lower_guardrail:
-                # 고정 비율로 증액
-                new_annual_withdrawal = annual_withdrawal_last_year * (1 + self.adjustment_pct)
-                self.current_wr = new_annual_withdrawal / current_nav if current_nav > 0 else 0
-                self.previous_nav = current_nav
-                return new_annual_withdrawal / 12
-
-            # Rule 2: Portfolio Management Rule
-            elif portfolio_return < self.freeze_threshold:
-                # 큰 손실 발생 → 동결 (인플레이션 조정 없음)
-                self.current_wr = annual_withdrawal_last_year / current_nav if current_nav > 0 else 0
-                self.previous_nav = current_nav
-                return previous_withdrawal
-
-            else:
-                # 정상 범위 + 정상 수익 → NAV 기준 인출 (인플레이션 조정 제거)
-                self.current_wr = self.initial_wr
-                self.previous_nav = current_nav
-                return current_nav * self.initial_wr / 12
-
+        # 전월 대비 포트폴리오 수익률 계산 (인출 없는 NAV 기준)
+        if nav_no_withdrawal and self.prev_month_nav_no_withdrawal and self.prev_month_nav_no_withdrawal > 0:
+            monthly_return = (nav_no_withdrawal - self.prev_month_nav_no_withdrawal) / self.prev_month_nav_no_withdrawal
         else:
-            # 월 중에는 이전 인출액 유지
-            return previous_withdrawal
+            monthly_return = 0.0
+
+        # 인출액 조정: 이전 인출액에 전월 수익률 반영
+        adjusted_withdrawal = previous_withdrawal * (1 + monthly_return)
+
+        # Guardrail 한도 계산
+        max_withdrawal = current_nav * self.upper_guardrail / 12
+        min_withdrawal = current_nav * self.lower_guardrail / 12
+
+        # 한도 적용 (캡핑)
+        if adjusted_withdrawal > max_withdrawal:
+            final_withdrawal = max_withdrawal
+        elif adjusted_withdrawal < min_withdrawal:
+            final_withdrawal = min_withdrawal
+        else:
+            final_withdrawal = adjusted_withdrawal
+
+        # 다음 달을 위해 현재 NAV 저장
+        self.prev_month_nav_no_withdrawal = nav_no_withdrawal if nav_no_withdrawal else current_nav
+
+        return final_withdrawal
 
 
 class DynamicWithdrawalSimulator:
@@ -875,6 +865,7 @@ class DynamicWithdrawalSimulator:
         month_counter = 0
         prev_nav = v0  # Guyton-Klinger 연간 수익률 추적용
         nav_no_withdrawal = v0  # 인출 없는 순수 포트폴리오 NAV 추적용
+        prev_nav_no_withdrawal = v0  # 전일 인출 없는 NAV (일별 수익률 계산용)
 
         daily_data = []
 
@@ -894,12 +885,9 @@ class DynamicWithdrawalSimulator:
 
             if is_month_start:
                 if strategy == 'guyton_klinger':
-                    portfolio_return = (
-                        (Total_NAV - prev_nav) / prev_nav
-                        if prev_nav > 0 else 0.0
-                    )
+                    # nav_no_withdrawal를 전달하여 전월 수익률 기반 조정
                     withdrawal = strategy_obj.calculate_withdrawal(
-                        Total_NAV, withdrawal, month_counter, portfolio_return
+                        Total_NAV, withdrawal, month_counter, nav_no_withdrawal
                     )
                 else:
                     withdrawal = strategy_obj.calculate_withdrawal(
@@ -909,10 +897,6 @@ class DynamicWithdrawalSimulator:
                 # 인출 실행
                 if Total_NAV > 0:
                     Total_NAV = max(Total_NAV - withdrawal, 0.0)
-
-                # Guyton-Klinger: 연간 주기마다 prev_nav 갱신
-                if strategy == 'guyton_klinger' and month_counter > 0 and month_counter % 12 == 0:
-                    prev_nav = Total_NAV
 
                 month_counter += 1
 
@@ -932,7 +916,15 @@ class DynamicWithdrawalSimulator:
             # 행 기록
             # --------------------------------------------------------
             cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
-            portfolio_return_no_withdrawal = (nav_no_withdrawal - v0) / v0 if v0 != 0 else 0.0
+
+            # Portfolio_return_no_withdrawal: 전일 대비 일별 수익률
+            if day_idx == 0:
+                portfolio_return_no_withdrawal = 0.0
+            else:
+                portfolio_return_no_withdrawal = (
+                    (nav_no_withdrawal - prev_nav_no_withdrawal) / prev_nav_no_withdrawal
+                    if prev_nav_no_withdrawal > 0 else 0.0
+                )
 
             # Current_WR 계산: Guardrails는 월초에 인출 전 NAV 기준 사용
             if strategy == 'guardrails' and is_month_start:
@@ -946,6 +938,9 @@ class DynamicWithdrawalSimulator:
                 status = 'Lower_Breach'
             else:
                 status = 'Normal'
+
+            # 전일 NAV 업데이트 (다음 날 일별 수익률 계산용)
+            prev_nav_no_withdrawal = nav_no_withdrawal
 
             row = {
                 'Date': date,
