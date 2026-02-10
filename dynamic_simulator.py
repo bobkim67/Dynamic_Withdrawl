@@ -739,6 +739,12 @@ class DynamicWithdrawalSimulator:
         nav_no_withdrawal = v0  # 인출 없는 순수 포트폴리오 NAV 추적용
         prev_nav_no_withdrawal = v0  # 전일 인출 없는 NAV (일별 수익률 계산용)
 
+        # Option A: 월간 유지되는 Guardrail 상태 및 Adjust 모드 정보
+        current_guardrail_status = 'Normal'
+        adjust_triggered = 'None'
+        adjust_monthly_return = 0.0
+        adjust_applied_pct = 0.0
+
         daily_data = []
 
         for day_idx in range(n_days):
@@ -756,6 +762,32 @@ class DynamicWithdrawalSimulator:
             nav_before_withdrawal = Total_NAV  # 인출 전 NAV 저장 (상태 판정용)
 
             if is_month_start:
+                # === Adjust 모드 trigger 정보 계산 (calculate_withdrawal 호출 전에 먼저) ===
+                if strategy == 'guardrails' and strategy_obj.adjustment_mode == 'adjust' and month_counter > 0:
+                    # 전월 대비 월간 수익률 계산 (calculate_withdrawal 호출 전 상태 사용)
+                    if strategy_obj.prev_month_nav_no_withdrawal and strategy_obj.prev_month_nav_no_withdrawal > 0:
+                        prev_month_nav = strategy_obj.prev_month_nav_no_withdrawal
+                        adjust_monthly_return = (nav_no_withdrawal - prev_month_nav) / prev_month_nav
+                    else:
+                        adjust_monthly_return = 0.0
+
+                    # Trigger 판단
+                    if adjust_monthly_return < -strategy_obj.return_threshold:
+                        adjust_triggered = 'Decrease'
+                        adjust_applied_pct = -strategy_obj.adjustment_pct
+                    elif adjust_monthly_return > strategy_obj.return_threshold:
+                        adjust_triggered = 'Increase'
+                        adjust_applied_pct = strategy_obj.adjustment_pct
+                    else:
+                        adjust_triggered = 'None'
+                        adjust_applied_pct = 0.0
+                else:
+                    # Fixed 전략이거나 cap 모드인 경우
+                    adjust_triggered = 'None'
+                    adjust_monthly_return = 0.0
+                    adjust_applied_pct = 0.0
+
+                # 인출액 계산
                 if strategy == 'guardrails':
                     # Guardrails는 adjust 모드에서 nav_no_withdrawal 사용
                     withdrawal = strategy_obj.calculate_withdrawal(
@@ -766,6 +798,16 @@ class DynamicWithdrawalSimulator:
                     withdrawal = strategy_obj.calculate_withdrawal(
                         Total_NAV, withdrawal, month_counter
                     )
+
+                # === Option A: Guardrail Status 계산 (월초에만) ===
+                current_wr = (withdrawal * 12) / nav_before_withdrawal if nav_before_withdrawal > 0 else 0.0
+
+                if current_wr > strategy_obj.upper_guardrail:
+                    current_guardrail_status = 'Upper_Breach'
+                elif current_wr < strategy_obj.lower_guardrail:
+                    current_guardrail_status = 'Lower_Breach'
+                else:
+                    current_guardrail_status = 'Normal'
 
                 # 인출 실행
                 if Total_NAV > 0:
@@ -799,18 +841,8 @@ class DynamicWithdrawalSimulator:
                     if prev_nav_no_withdrawal > 0 else 0.0
                 )
 
-            # Current_WR 계산: Guardrails는 월초에 인출 전 NAV 기준 사용
-            if strategy == 'guardrails' and is_month_start:
-                current_wr = (withdrawal * 12) / nav_before_withdrawal if nav_before_withdrawal > 0 else 0.0
-            else:
-                current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
-
-            if current_wr > strategy_obj.upper_guardrail:
-                status = 'Upper_Breach'
-            elif current_wr < strategy_obj.lower_guardrail:
-                status = 'Lower_Breach'
-            else:
-                status = 'Normal'
+            # Current_WR 계산 (참고용, 매일 업데이트)
+            current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
 
             # 전일 NAV 업데이트 (다음 날 일별 수익률 계산용)
             prev_nav_no_withdrawal = nav_no_withdrawal
@@ -822,13 +854,13 @@ class DynamicWithdrawalSimulator:
                 'Cumulative_Return': round(cumulative_return, 8),
                 'Portfolio_Return_No_Withdrawal': round(portfolio_return_no_withdrawal, 8),
                 'Withdrawal_Amount': round(withdrawal, 8) if is_month_start else 0.0,
-                'Monthly_Withdrawal': round(withdrawal, 8),
                 'Current_WR': round(current_wr, 8),
                 'Upper_Guardrail': strategy_obj.upper_guardrail,
                 'Lower_Guardrail': strategy_obj.lower_guardrail,
-                'Is_Month_Start': is_month_start,
-                'Is_Year_Start': is_year_start,
-                'Guardrail_Status': status,
+                'Guardrail_Status': current_guardrail_status,
+                'Adjust_Triggered': adjust_triggered,
+                'Adjust_Monthly_Return': round(adjust_monthly_return, 8),
+                'Adjust_Applied_Pct': round(adjust_applied_pct, 8),
                 'Year_Month': f"{date.year}-{date.month:02d}",
             }
 
