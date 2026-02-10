@@ -22,12 +22,12 @@ except ImportError:
 
 class FixedWithdrawal:
     """
-    Fixed Rate 전략: 인플레이션 조정만 수행
+    Fixed Rate 전략: NAV 기준 고정 인출률
 
     핵심 원리:
     - Guardrail 없음, 동결 규칙 없음
-    - 매년 초 인플레이션 누적 조정만 수행
-    - 단순히 초기 인출률 × 인플레이션 누적 조정
+    - 매년 초 현재 NAV × 초기 인출률로 재계산
+    - 순수 NAV 연동 (인플레이션 조정 없음)
     """
 
     def __init__(self, initial_wr: float, inflation_rate: float = 0.02):
@@ -71,11 +71,10 @@ class FixedWithdrawal:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
-        # 매년 초: 인플레이션 누적 조정
+        # 매년 초: NAV 기준 재계산 (인플레이션 조정 제거)
         if month_idx % 12 == 0:
-            inflation_adjustment = (1 + self.inflation_rate) ** (month_idx / 12)
-            self.current_wr = self.initial_wr * inflation_adjustment
-            return (current_nav * self.initial_wr / 12) * inflation_adjustment
+            self.current_wr = self.initial_wr
+            return current_nav * self.initial_wr / 12
 
         # 월 중에는 이전 인출액 유지
         return previous_withdrawal
@@ -159,10 +158,9 @@ class GuardrailsWithdrawal:
                 return new_annual_withdrawal / 12
 
             else:
-                # 정상 범위: 인플레이션 조정
-                inflation_adjustment = (1 + self.inflation_rate) ** (month_idx / 12)
-                self.current_wr = self.initial_wr * inflation_adjustment
-                return (current_nav * self.initial_wr / 12) * inflation_adjustment
+                # 정상 범위: NAV 기준 인출 (인플레이션 조정 제거)
+                self.current_wr = self.initial_wr
+                return current_nav * self.initial_wr / 12
 
         else:
             # 월 중에는 이전 인출액 유지
@@ -181,7 +179,7 @@ class GuytonKlingerWithdrawal:
     규칙:
     1. Guardrail Rule: 인출률이 상한/하한 벗어나면 고정 비율로 조정
     2. Portfolio Management Rule: 작년 수익률 < -10%이면 동결
-    3. Normal: 정상 범위 & 정상 수익 → 인플레이션 조정
+    3. Normal: 정상 범위 & 정상 수익 → NAV 기준 인출
     """
 
     def __init__(self,
@@ -271,11 +269,10 @@ class GuytonKlingerWithdrawal:
                 return previous_withdrawal
 
             else:
-                # 정상 범위 + 정상 수익 → 인플레이션 조정
-                inflation_adjustment = (1 + self.inflation_rate) ** (month_idx / 12)
-                self.current_wr = self.initial_wr * inflation_adjustment
+                # 정상 범위 + 정상 수익 → NAV 기준 인출 (인플레이션 조정 제거)
+                self.current_wr = self.initial_wr
                 self.previous_nav = current_nav
-                return (current_nav * self.initial_wr / 12) * inflation_adjustment
+                return current_nav * self.initial_wr / 12
 
         else:
             # 월 중에는 이전 인출액 유지
