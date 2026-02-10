@@ -144,15 +144,12 @@ class GuardrailsWithdrawal:
         # 한도 적용 (단순 캡핑)
         if base_withdrawal > max_withdrawal:
             # 상한 초과: 상한으로 제한
-            self.current_wr = self.upper_guardrail
             return max_withdrawal
         elif base_withdrawal < min_withdrawal:
             # 하한 미만: 하한으로 제한
-            self.current_wr = self.lower_guardrail
             return min_withdrawal
         else:
             # 정상 범위: 기본 인출액 유지
-            self.current_wr = (base_withdrawal * 12) / current_nav if current_nav > 0 else 0
             return base_withdrawal
 
 
