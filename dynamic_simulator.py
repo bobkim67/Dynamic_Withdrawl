@@ -889,6 +889,7 @@ class DynamicWithdrawalSimulator:
         withdrawal = v0 * initial_wr / 12
         month_counter = 0
         prev_nav = v0  # Guyton-Klinger 연간 수익률 추적용
+        nav_no_withdrawal = v0  # 인출 없는 순수 포트폴리오 NAV 추적용
 
         daily_data = []
 
@@ -936,10 +937,15 @@ class DynamicWithdrawalSimulator:
                 Total_NAV = Total_NAV * (1 + daily_ret)
                 Total_NAV = max(Total_NAV, 0.0)
 
+                # 인출 없는 순수 포트폴리오 NAV도 업데이트
+                nav_no_withdrawal = nav_no_withdrawal * (1 + daily_ret)
+                nav_no_withdrawal = max(nav_no_withdrawal, 0.0)
+
             # --------------------------------------------------------
             # 행 기록
             # --------------------------------------------------------
             cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
+            portfolio_return_no_withdrawal = (nav_no_withdrawal - v0) / v0 if v0 != 0 else 0.0
             current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
 
             if current_wr > strategy_obj.upper_guardrail:
@@ -954,6 +960,7 @@ class DynamicWithdrawalSimulator:
                 'Day_Index': day_idx,
                 'Total_NAV': round(Total_NAV, 8),
                 'Cumulative_Return': round(cumulative_return, 8),
+                'Portfolio_Return_No_Withdrawal': round(portfolio_return_no_withdrawal, 8),
                 'Withdrawal_Amount': round(withdrawal, 8) if is_month_start else 0.0,
                 'Monthly_Withdrawal': round(withdrawal, 8),
                 'Current_WR': round(current_wr, 8),
