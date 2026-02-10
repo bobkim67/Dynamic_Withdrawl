@@ -890,6 +890,8 @@ class DynamicWithdrawalSimulator:
             # --------------------------------------------------------
             # 월초 처리: 인출 먼저 실행
             # --------------------------------------------------------
+            nav_before_withdrawal = Total_NAV  # 인출 전 NAV 저장 (상태 판정용)
+
             if is_month_start:
                 if strategy == 'guyton_klinger':
                     portfolio_return = (
@@ -931,7 +933,12 @@ class DynamicWithdrawalSimulator:
             # --------------------------------------------------------
             cumulative_return = (Total_NAV - v0) / v0 if v0 != 0 else 0.0
             portfolio_return_no_withdrawal = (nav_no_withdrawal - v0) / v0 if v0 != 0 else 0.0
-            current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
+
+            # Current_WR 계산: Guardrails는 월초에 인출 전 NAV 기준 사용
+            if strategy == 'guardrails' and is_month_start:
+                current_wr = (withdrawal * 12) / nav_before_withdrawal if nav_before_withdrawal > 0 else 0.0
+            else:
+                current_wr = (withdrawal * 12) / Total_NAV if Total_NAV > 0 else 0.0
 
             if current_wr > strategy_obj.upper_guardrail:
                 status = 'Upper_Breach'
