@@ -22,12 +22,13 @@ except ImportError:
 
 class FixedWithdrawal:
     """
-    Fixed Rate 전략: NAV 기준 고정 인출률
+    Fixed 전략: 완전 고정 인출액
 
     핵심 원리:
-    - Guardrail 없음, 동결 규칙 없음
-    - 매년 초 현재 NAV × 초기 인출률로 재계산
-    - 순수 NAV 연동 (인플레이션 조정 없음)
+    - 첫 달: 초기 NAV × 초기 인출률로 인출액 결정
+    - 이후: 동일한 금액을 영구적으로 인출 (절대 변경 안 됨)
+    - Guardrail 없음, 재계산 없음
+    - 진짜 "Fixed" - 인출액이 고정됨
     """
 
     def __init__(self, initial_wr: float, inflation_rate: float = 0.02):
@@ -66,17 +67,12 @@ class FixedWithdrawal:
         -------
         float : 이번 달 인출액
         """
-        # 첫 달
+        # 첫 달: 초기 인출액 설정
         if month_idx == 0:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
-        # 매년 초: NAV 기준 재계산 (인플레이션 조정 제거)
-        if month_idx % 12 == 0:
-            self.current_wr = self.initial_wr
-            return current_nav * self.initial_wr / 12
-
-        # 월 중에는 이전 인출액 유지
+        # 이후 모든 달: 고정 인출액 유지 (절대 변경 안 됨)
         return previous_withdrawal
 
 
