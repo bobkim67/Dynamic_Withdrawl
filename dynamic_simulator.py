@@ -22,12 +22,13 @@ except ImportError:
 
 class FixedWithdrawal:
     """
-    Fixed Rate 전략: NAV 기준 고정 인출률
+    Fixed 전략: 완전 고정 인출액
 
     핵심 원리:
-    - Guardrail 없음, 동결 규칙 없음
-    - 매년 초 현재 NAV × 초기 인출률로 재계산
-    - 순수 NAV 연동 (인플레이션 조정 없음)
+    - 첫 달: 초기 NAV × 초기 인출률로 인출액 결정
+    - 이후: 동일한 금액을 영구적으로 인출 (절대 변경 안 됨)
+    - Guardrail 없음, 재계산 없음
+    - 진짜 "Fixed" - 인출액이 고정됨
     """
 
     def __init__(self, initial_wr: float, inflation_rate: float = 0.02):
@@ -66,13 +67,12 @@ class FixedWithdrawal:
         -------
         float : 이번 달 인출액
         """
-        # 첫 달
+        # 첫 달: 초기 인출액 설정
         if month_idx == 0:
             self.current_wr = self.initial_wr
             return current_nav * self.initial_wr / 12
 
-
-        # 월 중에는 이전 인출액 유지
+        # 이후 모든 달: 고정 인출액 유지 (절대 변경 안 됨)
         return previous_withdrawal
 
 
@@ -108,6 +108,7 @@ class GuardrailsWithdrawal:
         self.upper_guardrail = initial_wr * (1 + guardrail_width)
         self.lower_guardrail = initial_wr * (1 - guardrail_width)
         self.inflation_rate = inflation_rate
+        self.base_withdrawal = None  # 첫 달 인출액 저장용 (고정)
         self.current_wr = initial_wr  # 추적용
 
     def calculate_withdrawal(self,
@@ -130,28 +131,28 @@ class GuardrailsWithdrawal:
         -------
         float : 이번 달 인출액
         """
-        # 첫 달: 초기 인출액 설정
+        # 첫 달: 초기 인출액 설정 및 저장
         if month_idx == 0:
-            self.current_wr = self.initial_wr
-            return current_nav * self.initial_wr / 12
+            self.base_withdrawal = current_nav * self.initial_wr / 12
+            return self.base_withdrawal
 
-        # 기본 인출액 (이전 달과 동일)
-        base_withdrawal = previous_withdrawal
+        # 원래 인출액 사용 (캡핑되어도 변경되지 않음)
+        base = self.base_withdrawal
 
         # 매월 Guardrail 한도 계산
         max_withdrawal = current_nav * self.upper_guardrail / 12
         min_withdrawal = current_nav * self.lower_guardrail / 12
 
-        # 한도 적용 (단순 캡핑)
-        if base_withdrawal > max_withdrawal:
+        # 한도 적용 (단순 캡핑, base는 변경 안 됨)
+        if base > max_withdrawal:
             # 상한 초과: 상한으로 제한
             return max_withdrawal
-        elif base_withdrawal < min_withdrawal:
+        elif base < min_withdrawal:
             # 하한 미만: 하한으로 제한
             return min_withdrawal
         else:
-            # 정상 범위: 기본 인출액 유지
-            return base_withdrawal
+            # 정상 범위: 원래 인출액 유지
+            return base
 
 
 class GuytonKlingerWithdrawal:

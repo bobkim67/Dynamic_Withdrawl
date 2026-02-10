@@ -139,5 +139,4 @@ Thumbs.db
 # Project specific
 outputs/
 results/
-*.xlsx
 *.csv
