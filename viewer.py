@@ -151,7 +151,7 @@ def simulate_paths_for_strategy(portfolio_name, init_wr, band, adj_on,
 
 def gbm_survival_probability(mu, sigma, wr, T=10, beta=0.5):
     """
-    GBM 보존확률 계산
+    GBM 생존확률 계산 (Closed-form)
 
     Parameters
     ----------
@@ -163,7 +163,7 @@ def gbm_survival_probability(mu, sigma, wr, T=10, beta=0.5):
 
     Returns
     -------
-    float — 보존확률 (0~1)
+    float — 생존확률 (0~1)
     """
     if wr <= 0:
         return 1.0
@@ -171,28 +171,9 @@ def gbm_survival_probability(mu, sigma, wr, T=10, beta=0.5):
         remaining = 1.0 - wr * T + mu * T
         return 1.0 if remaining >= beta else 0.0
 
-    dt = 1/12
-    n_steps = int(T / dt)
-    c_monthly = wr / 12  # V0=1 정규화
-
-    # 1차 모멘트 전파
-    EV = 1.0
-    # 2차 모멘트 전파
-    EV2 = 1.0
-
-    for _ in range(n_steps):
-        new_EV = EV * np.exp(mu * dt) - c_monthly
-        new_EV2 = EV2 * np.exp((2*mu + sigma**2) * dt) \
-                  - 2 * c_monthly * EV * np.exp(mu * dt) \
-                  + c_monthly**2
-        EV = new_EV
-        EV2 = max(new_EV2, 0)
-        if EV <= 0:
-            return 0.0
-
-    VarV = max(EV2 - EV**2, 1e-12)
-    z = (beta - EV) / np.sqrt(VarV)
-    survival = 1.0 - norm.cdf(z)
+    # Closed-form formula
+    z = -(np.log(beta) - (mu - wr - 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
+    survival = norm.cdf(z)
     return np.clip(survival, 0.0, 1.0)
 
 
