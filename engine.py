@@ -169,7 +169,8 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
                                  adj_up: float = 0.05,
                                  adj_dn: float = -0.05,
                                  beta: float = 0.5,
-                                 W0: float = 100.0) -> dict:
+                                 W0: float = 100.0,
+                                 debug: bool = False) -> dict:
     """
     월간 수익률 path에 인출 전략을 적용하여 시뮬레이션
 
@@ -206,6 +207,8 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         terminal 실패 기준 (W_T < beta * W0이면 실패)
     W0 : float
         초기 자산
+    debug : bool
+        True일 때 중간 계산 과정을 DataFrame으로 반환
 
     Returns
     -------
@@ -217,6 +220,7 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         'ruin_flag': bool - min(W_t) <= 0 여부
         'terminal_fail_flag': bool - W_T < beta * W0 여부
         'success': bool - not ruin AND not terminal_fail
+        'debug_df': pd.DataFrame - (debug=True일 때만) 월별 상세 계산 과정
     """
     T = len(path_returns)
 
@@ -233,6 +237,10 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
     # Guardrail 경계
     upper_wr = init_wr * (1 + band)
     lower_wr = init_wr * (1 - band)
+
+    # Debug용 중간 계산 기록
+    if debug:
+        debug_records = []
 
     # 매월 시뮬레이션
     for t in range(T):
@@ -263,18 +271,23 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
             withdraw_adj = base
 
         # Step 4: Guardrail 캡 적용
+        cap_applied = 'None'
         if W_t > 0:
             current_wr = (withdraw_adj * 12) / W_t
 
             if current_wr > upper_wr:
                 withdraw_final = upper_wr * W_t / 12
+                cap_applied = 'Upper'
             elif current_wr < lower_wr:
                 withdraw_final = lower_wr * W_t / 12
+                cap_applied = 'Lower'
             else:
                 withdraw_final = withdraw_adj
         else:
             # 이미 파산 상태
+            current_wr = 0
             withdraw_final = 0
+            cap_applied = 'Ruin'
 
         # Step 5: 인출 실행
         W_t = W_t - withdraw_final
@@ -284,6 +297,24 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         W_series[t + 1] = W_t
         withdraw_series[t] = withdraw_final
 
+        # Debug 기록
+        if debug:
+            cum_withdraw_t = np.sum(withdraw_series[:t+1])
+            debug_records.append({
+                'Month': t,
+                'Monthly_Return': path_returns[t],
+                'NAV_Before_Withdrawal': W_series[t] * (1 + path_returns[t]),
+                'Base_Withdrawal': base,
+                'Adj_Withdrawal': withdraw_adj,
+                'Current_WR_Before_Cap': current_wr,
+                'Upper_Guardrail': upper_wr,
+                'Lower_Guardrail': lower_wr,
+                'Cap_Applied': cap_applied,
+                'Final_Withdrawal': withdraw_final,
+                'NAV_After_Withdrawal': W_t,
+                'Cum_Withdrawal': cum_withdraw_t
+            })
+
     # 집계 지표 계산
     cum_withdraw = np.sum(withdraw_series)
     terminal_nav = W_series[-1]
@@ -291,7 +322,7 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
     terminal_fail_flag = terminal_nav < beta * W0
     success = (not ruin_flag) and (not terminal_fail_flag)
 
-    return {
+    result = {
         'W_series': W_series,
         'withdraw_series': withdraw_series,
         'cum_withdraw': cum_withdraw,
@@ -300,6 +331,12 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         'terminal_fail_flag': terminal_fail_flag,
         'success': success
     }
+
+    # Debug DataFrame 추가
+    if debug:
+        result['debug_df'] = pd.DataFrame(debug_records)
+
+    return result
 
 
 # ============================================================================
@@ -613,6 +650,61 @@ if __name__ == "__main__":
               f"({'✅ 일치' if abs(withdraw - actual_withdraw) < 1e-6 else '❌ 불일치'})")
 
         W_prev = W_after_withdraw
+
+    # ========================================
+    # Excel 내보내기
+    # ========================================
+
+    print("\n" + "=" * 70)
+    print("Excel 내보내기")
+    print("=" * 70)
+
+    # 테스트 1, 2, 3을 debug=True로 재실행
+    result1_debug = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05,
+        band=0.15,
+        adj_on=False,
+        W0=100.0,
+        debug=True
+    )
+
+    result2_debug = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.15,
+        band=0.15,
+        adj_on=False,
+        W0=100.0,
+        debug=True
+    )
+
+    result3_debug = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05,
+        band=0.15,
+        adj_on=True,
+        lookback=1,
+        thr_up=0.03,
+        thr_dn=-0.03,
+        adj_up=0.05,
+        adj_dn=-0.05,
+        W0=100.0,
+        debug=True
+    )
+
+    # Excel 파일로 저장
+    excel_filename = 'engine_verification.xlsx'
+
+    with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
+        result1_debug['debug_df'].to_excel(writer, sheet_name='Test1_Base', index=False)
+        result2_debug['debug_df'].to_excel(writer, sheet_name='Test2_HighWR', index=False)
+        result3_debug['debug_df'].to_excel(writer, sheet_name='Test3_AdjOn', index=False)
+
+    print(f"\n✅ Excel 파일 생성 완료: {excel_filename}")
+    print(f"  시트 1: Test1_Base (init_wr=0.05, band=0.15, adj_on=False)")
+    print(f"  시트 2: Test2_HighWR (init_wr=0.15, band=0.15, adj_on=False)")
+    print(f"  시트 3: Test3_AdjOn (init_wr=0.05, band=0.15, adj_on=True)")
+    print(f"\n파일 크기: {len(result1_debug['debug_df'])}행 × 3시트")
 
     print("\n" + "=" * 70)
     print("검증 완료")
