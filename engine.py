@@ -4,6 +4,9 @@ Dynamic Withdrawal Optimization Engine - Step 1: Path Generation
 새 최적화 엔진의 Path 생성 모듈
 - Rolling Historical Window
 - Block Bootstrap
+- 인출 시뮬레이션
+- 전략 평가 집계
+- Pareto Frontier
 """
 
 import numpy as np
@@ -11,6 +14,13 @@ import pandas as pd
 import pickle
 from typing import List
 from withdrawal_backtest import DataPreprocessor, PORTFOLIOS
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    # tqdm이 없으면 더미 함수 사용
+    def tqdm(iterable, **kwargs):
+        return iterable
 
 
 # ============================================================================
@@ -337,6 +347,221 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         result['debug_df'] = pd.DataFrame(debug_records)
 
     return result
+
+
+# ============================================================================
+# 전략 평가 집계 함수
+# ============================================================================
+
+def evaluate_strategy(paths: List[np.ndarray],
+                      init_wr: float,
+                      band: float,
+                      adj_on: bool = False,
+                      lookback: int = 1,
+                      thr_up: float = 0.03,
+                      thr_dn: float = -0.03,
+                      adj_up: float = 0.05,
+                      adj_dn: float = -0.05,
+                      beta: float = 0.5,
+                      W0: float = 100.0) -> dict:
+    """
+    여러 path에 대해 인출 전략을 시뮬레이션하고 결과를 집계
+
+    Parameters
+    ----------
+    paths : List[np.ndarray]
+        월간 수익률 path들의 리스트
+    (나머지 파라미터는 simulate_withdrawal_on_path와 동일)
+
+    Returns
+    -------
+    result : dict
+        파라미터 기록 + 집계 메트릭
+    """
+    n_paths = len(paths)
+
+    # 각 path별 결과 저장
+    success_list = []
+    cum_withdraw_list = []
+    ruin_list = []
+    terminal_fail_list = []
+    cv_list = []
+    worst_cut_list = []
+    all_withdrawals = []  # 모든 path의 모든 월 인출액
+
+    # 각 path에 대해 시뮬레이션
+    for path in paths:
+        result = simulate_withdrawal_on_path(
+            path_returns=path,
+            init_wr=init_wr,
+            band=band,
+            adj_on=adj_on,
+            lookback=lookback,
+            thr_up=thr_up,
+            thr_dn=thr_dn,
+            adj_up=adj_up,
+            adj_dn=adj_dn,
+            beta=beta,
+            W0=W0,
+            debug=False
+        )
+
+        # 기본 지표
+        success_list.append(1 if result['success'] else 0)
+        cum_withdraw_list.append(result['cum_withdraw'])
+        ruin_list.append(1 if result['ruin_flag'] else 0)
+        terminal_fail_list.append(1 if result['terminal_fail_flag'] else 0)
+
+        # 인출액 수집 (p5 계산용)
+        all_withdrawals.extend(result['withdraw_series'])
+
+        # CV 계산 (각 path별)
+        withdraw_series = result['withdraw_series']
+        nonzero_withdrawals = withdraw_series[withdraw_series > 0]
+        if len(nonzero_withdrawals) > 1:
+            cv = np.std(nonzero_withdrawals, ddof=1) / np.mean(nonzero_withdrawals)
+            cv_list.append(cv)
+        else:
+            cv_list.append(0)
+
+        # worst_cut 계산 (각 path별 최대 월간 인출 감소율)
+        worst_cut = 0
+        for t in range(1, len(withdraw_series)):
+            if withdraw_series[t-1] > 0:
+                cut_rate = (withdraw_series[t-1] - withdraw_series[t]) / withdraw_series[t-1]
+                worst_cut = max(worst_cut, cut_rate)
+        worst_cut_list.append(worst_cut)
+
+    # 집계
+    return {
+        # 파라미터 기록
+        'init_wr': init_wr,
+        'band': band,
+        'adj_on': adj_on,
+        'lookback': lookback,
+        'thr_up': thr_up,
+        'thr_dn': thr_dn,
+        'adj_up': adj_up,
+        'adj_dn': adj_dn,
+
+        # 프론티어 축
+        'x_success_rate': np.mean(success_list),
+        'y_cum_withdraw_median': np.median(cum_withdraw_list),
+        'y_cum_withdraw_mean': np.mean(cum_withdraw_list),
+
+        # 실패 분해
+        'p_ruin': np.mean(ruin_list),
+        'p_terminal_fail': np.mean(terminal_fail_list),
+        'p_fail': 1 - np.mean(success_list),
+
+        # 보조 지표 - 인출 변동성
+        'cv_median': np.median(cv_list),
+        'cv_mean': np.mean(cv_list),
+
+        # 보조 지표 - worst cut
+        'worst_cut_median': np.median(worst_cut_list),
+        'worst_cut_mean': np.mean(worst_cut_list),
+
+        # 보조 지표 - p5 월 인출액
+        'p5_monthly_income': np.percentile(all_withdrawals, 5),
+
+        # 메타
+        'n_paths': n_paths,
+    }
+
+
+def pareto_frontier(results: List[dict],
+                    x_col: str = 'x_success_rate',
+                    y_col: str = 'y_cum_withdraw_median') -> List[dict]:
+    """
+    Pareto frontier 계산 (dominated 점 제거)
+
+    A가 B를 지배: x_A >= x_B AND y_A >= y_B (하나 이상 strict inequality)
+
+    Parameters
+    ----------
+    results : List[dict]
+        evaluate_strategy 반환값들의 리스트
+    x_col : str
+        x축 컬럼명
+    y_col : str
+        y축 컬럼명
+
+    Returns
+    -------
+    frontier : List[dict]
+        Pareto frontier 위의 점들 (is_frontier=True 추가)
+    """
+    n = len(results)
+    is_dominated = [False] * n
+
+    # 각 점에 대해 지배 여부 확인
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+
+            x_i, y_i = results[i][x_col], results[i][y_col]
+            x_j, y_j = results[j][x_col], results[j][y_col]
+
+            # j가 i를 지배하는지 확인
+            if x_j >= x_i and y_j >= y_i and (x_j > x_i or y_j > y_i):
+                is_dominated[i] = True
+                break
+
+    # Frontier 위의 점들만 선택
+    frontier = []
+    for i in range(n):
+        if not is_dominated[i]:
+            result_copy = results[i].copy()
+            result_copy['is_frontier'] = True
+            frontier.append(result_copy)
+
+    return frontier
+
+
+def select_optimal(results: List[dict],
+                   x_min: float = 0.90,
+                   q_ruin: float = 0.01) -> dict:
+    """
+    제약 조건 하에서 최적 전략 선택
+
+    제약:
+    - x_success_rate >= x_min
+    - p_ruin <= q_ruin
+
+    목표:
+    - y_cum_withdraw_median 최대화
+
+    Parameters
+    ----------
+    results : List[dict]
+        evaluate_strategy 반환값들의 리스트
+    x_min : float
+        최소 성공확률 (기본 0.90)
+    q_ruin : float
+        최대 허용 파산확률 (기본 0.01)
+
+    Returns
+    -------
+    optimal : dict or None
+        최적 전략 (is_optimal=True 추가), 후보 없으면 None
+    """
+    # 제약 조건 필터링
+    candidates = [
+        r for r in results
+        if r['x_success_rate'] >= x_min and r['p_ruin'] <= q_ruin
+    ]
+
+    if len(candidates) == 0:
+        return None
+
+    # y_cum_withdraw_median 최대인 것 선택
+    optimal = max(candidates, key=lambda r: r['y_cum_withdraw_median'])
+    optimal_copy = optimal.copy()
+    optimal_copy['is_optimal'] = True
+
+    return optimal_copy
 
 
 # ============================================================================
@@ -705,6 +930,127 @@ if __name__ == "__main__":
     print(f"  시트 2: Test2_HighWR (init_wr=0.15, band=0.15, adj_on=False)")
     print(f"  시트 3: Test3_AdjOn (init_wr=0.05, band=0.15, adj_on=True)")
     print(f"\n파일 크기: {len(result1_debug['debug_df'])}행 × 3시트")
+
+    # ========================================
+    # 7. 전략 평가 집계 및 Pareto Frontier 테스트
+    # ========================================
+
+    print("\n" + "=" * 70)
+    print("전략 평가 집계 및 Pareto Frontier 검증")
+    print("=" * 70)
+
+    # 소규모 그리드 서치
+    print("\n[소규모 그리드 서치]")
+    print("-" * 70)
+
+    # 파라미터 그리드
+    init_wr_grid = [0.04, 0.05, 0.06, 0.07, 0.08]
+    band_grid = [0.10, 0.15, 0.20]
+    adj_on_grid = [False]  # 보정 없이 기본만 테스트
+
+    # 전체 조합 수
+    total_combinations = len(init_wr_grid) * len(band_grid) * len(adj_on_grid)
+
+    print(f"파라미터 그리드:")
+    print(f"  init_wr: {init_wr_grid}")
+    print(f"  band: {band_grid}")
+    print(f"  adj_on: {adj_on_grid}")
+    print(f"  총 조합: {total_combinations}개")
+    print(f"  사용 paths: {len(rolling_paths)}개 (Port_5.0% rolling)")
+
+    # 그리드 서치 실행
+    grid_results = []
+
+    print("\n그리드 서치 실행 중...")
+    for init_wr in tqdm(init_wr_grid, desc="init_wr"):
+        for band in band_grid:
+            for adj_on in adj_on_grid:
+                result = evaluate_strategy(
+                    paths=rolling_paths,
+                    init_wr=init_wr,
+                    band=band,
+                    adj_on=adj_on,
+                    W0=100.0
+                )
+                grid_results.append(result)
+
+    print(f"\n✅ 그리드 서치 완료: {len(grid_results)}개 조합 평가")
+
+    # 결과 테이블 출력
+    print("\n" + "=" * 70)
+    print("그리드 서치 결과 테이블")
+    print("=" * 70)
+
+    # DataFrame으로 변환
+    df_results = pd.DataFrame([
+        {
+            'init_wr': r['init_wr'],
+            'band': r['band'],
+            'success_rate': r['x_success_rate'],
+            'cum_withdraw': r['y_cum_withdraw_median'],
+            'p_ruin': r['p_ruin'],
+            'cv_median': r['cv_median'],
+        }
+        for r in grid_results
+    ])
+
+    # 테이블 출력
+    print(df_results.to_string(index=False, float_format='%.4f'))
+
+    # Pareto frontier 계산
+    print("\n" + "=" * 70)
+    print("Pareto Frontier")
+    print("=" * 70)
+
+    frontier_results = pareto_frontier(grid_results)
+
+    print(f"\n✅ Frontier 위의 점: {len(frontier_results)}/{len(grid_results)}개")
+    print("\nFrontier 포인트:")
+    df_frontier = pd.DataFrame([
+        {
+            'init_wr': r['init_wr'],
+            'band': r['band'],
+            'success_rate': r['x_success_rate'],
+            'cum_withdraw': r['y_cum_withdraw_median'],
+            'p_ruin': r['p_ruin'],
+        }
+        for r in frontier_results
+    ])
+    print(df_frontier.to_string(index=False, float_format='%.4f'))
+
+    # 최적 전략 선택
+    print("\n" + "=" * 70)
+    print("최적 전략 선택")
+    print("=" * 70)
+
+    optimal = select_optimal(grid_results, x_min=0.90, q_ruin=0.01)
+
+    if optimal:
+        print(f"\n✅ 최적 전략 발견 (제약: 성공률 ≥ 90%, 파산률 ≤ 1%)")
+        print(f"\n파라미터:")
+        print(f"  init_wr: {optimal['init_wr']:.4f} ({optimal['init_wr']*100:.1f}%)")
+        print(f"  band: {optimal['band']:.4f} (±{optimal['band']*100:.0f}%)")
+        print(f"  adj_on: {optimal['adj_on']}")
+        print(f"\n성과:")
+        print(f"  성공확률: {optimal['x_success_rate']:.4f} ({optimal['x_success_rate']*100:.2f}%)")
+        print(f"  누적 인출액 (중앙값): {optimal['y_cum_withdraw_median']:.2f}")
+        print(f"  파산확률: {optimal['p_ruin']:.4f} ({optimal['p_ruin']*100:.2f}%)")
+        print(f"  Terminal 실패확률: {optimal['p_terminal_fail']:.4f} ({optimal['p_terminal_fail']*100:.2f}%)")
+        print(f"  CV (중앙값): {optimal['cv_median']:.4f}")
+        print(f"  Worst Cut (중앙값): {optimal['worst_cut_median']:.4f} ({optimal['worst_cut_median']*100:.2f}%)")
+        print(f"  P5 월 인출액: {optimal['p5_monthly_income']:.4f}")
+    else:
+        print("\n❌ 제약 조건을 만족하는 전략이 없습니다")
+
+    # 결과 저장
+    print("\n" + "=" * 70)
+    print("결과 저장")
+    print("=" * 70)
+
+    with open('grid_test_results.pkl', 'wb') as f:
+        pickle.dump(grid_results, f)
+
+    print(f"\n✅ 결과 저장 완료: grid_test_results.pkl ({len(grid_results)}개 조합)")
 
     print("\n" + "=" * 70)
     print("검증 완료")
