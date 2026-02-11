@@ -156,6 +156,153 @@ def generate_paths_bootstrap(monthly_returns: np.ndarray,
 
 
 # ============================================================================
+# 인출 시뮬레이션 함수
+# ============================================================================
+
+def simulate_withdrawal_on_path(path_returns: np.ndarray,
+                                 init_wr: float,
+                                 band: float,
+                                 adj_on: bool = False,
+                                 lookback: int = 1,
+                                 thr_up: float = 0.03,
+                                 thr_dn: float = -0.03,
+                                 adj_up: float = 0.05,
+                                 adj_dn: float = -0.05,
+                                 beta: float = 0.5,
+                                 W0: float = 100.0) -> dict:
+    """
+    월간 수익률 path에 인출 전략을 적용하여 시뮬레이션
+
+    인출 순서 (매월 반복, 순서 고정):
+    1. 수익률 적용: W_t = W_{t-1} * (1 + r_t)
+    2. Base 인출액 계산: base = W0 * init_wr / 12
+    3. 수익률 기반 보정 (adj_on=True일 때)
+    4. Guardrail 캡 적용
+    5. 인출 실행: W_t = W_t - withdraw_final
+
+    Parameters
+    ----------
+    path_returns : np.ndarray
+        월간 수익률 배열 (길이 T_months)
+    init_wr : float
+        초기 연간 인출률 (예: 0.05 = 5%)
+    band : float
+        guardrail 폭 (예: 0.15 = ±15%)
+        upper = init_wr * (1 + band)
+        lower = init_wr * (1 - band)
+    adj_on : bool
+        수익률 기반 보정 사용 여부
+    lookback : int
+        보정 시 참조 기간 (1=전월, 3=최근 3개월 누적)
+    thr_up : float
+        상향 보정 트리거 (월간/누적 수익률이 이 값 초과 시)
+    thr_dn : float
+        하향 보정 트리거 (월간/누적 수익률이 이 값 미만 시)
+    adj_up : float
+        상향 보정 비율 (예: 0.05 = +5%)
+    adj_dn : float
+        하향 보정 비율 (예: -0.05 = -5%, 음수로 입력)
+    beta : float
+        terminal 실패 기준 (W_T < beta * W0이면 실패)
+    W0 : float
+        초기 자산
+
+    Returns
+    -------
+    result : dict
+        'W_series': np.ndarray - 월말 NAV 시계열 (길이 T+1, W_0 포함)
+        'withdraw_series': np.ndarray - 월별 인출액 (길이 T)
+        'cum_withdraw': float - 총 누적 인출액
+        'terminal_nav': float - 최종 NAV (W_T)
+        'ruin_flag': bool - min(W_t) <= 0 여부
+        'terminal_fail_flag': bool - W_T < beta * W0 여부
+        'success': bool - not ruin AND not terminal_fail
+    """
+    T = len(path_returns)
+
+    # 결과 저장 배열 초기화
+    W_series = np.zeros(T + 1)  # W_0부터 W_T까지
+    withdraw_series = np.zeros(T)
+
+    # 초기 자산
+    W_series[0] = W0
+
+    # Base 인출액 (고정, 매월 동일)
+    base_withdraw = W0 * init_wr / 12
+
+    # Guardrail 경계
+    upper_wr = init_wr * (1 + band)
+    lower_wr = init_wr * (1 - band)
+
+    # 매월 시뮬레이션
+    for t in range(T):
+        # Step 1: 수익률 적용
+        W_t = W_series[t] * (1 + path_returns[t])
+
+        # Step 2: Base 인출액
+        base = base_withdraw
+
+        # Step 3: 수익률 기반 보정 (adj_on=True일 때)
+        if adj_on and t >= lookback:
+            # lookback 기간의 수익률 계산
+            if lookback == 1:
+                prev_return = path_returns[t - 1]
+            else:  # lookback == 3
+                # 최근 lookback 개월의 누적 수익률
+                prev_return = (1 + path_returns[t - lookback:t]).prod() - 1
+
+            # 보정 적용
+            if prev_return > thr_up:
+                withdraw_adj = base * (1 + adj_up)
+            elif prev_return < thr_dn:
+                withdraw_adj = base * (1 + adj_dn)  # adj_dn은 음수
+            else:
+                withdraw_adj = base
+        else:
+            # 보정 없음 (adj_on=False 또는 lookback 데이터 부족)
+            withdraw_adj = base
+
+        # Step 4: Guardrail 캡 적용
+        if W_t > 0:
+            current_wr = (withdraw_adj * 12) / W_t
+
+            if current_wr > upper_wr:
+                withdraw_final = upper_wr * W_t / 12
+            elif current_wr < lower_wr:
+                withdraw_final = lower_wr * W_t / 12
+            else:
+                withdraw_final = withdraw_adj
+        else:
+            # 이미 파산 상태
+            withdraw_final = 0
+
+        # Step 5: 인출 실행
+        W_t = W_t - withdraw_final
+        W_t = max(W_t, 0)  # 음수 방지
+
+        # 결과 저장
+        W_series[t + 1] = W_t
+        withdraw_series[t] = withdraw_final
+
+    # 집계 지표 계산
+    cum_withdraw = np.sum(withdraw_series)
+    terminal_nav = W_series[-1]
+    ruin_flag = np.any(W_series <= 0)
+    terminal_fail_flag = terminal_nav < beta * W0
+    success = (not ruin_flag) and (not terminal_fail_flag)
+
+    return {
+        'W_series': W_series,
+        'withdraw_series': withdraw_series,
+        'cum_withdraw': cum_withdraw,
+        'terminal_nav': terminal_nav,
+        'ruin_flag': ruin_flag,
+        'terminal_fail_flag': terminal_fail_flag,
+        'success': success
+    }
+
+
+# ============================================================================
 # 검증 코드
 # ============================================================================
 
@@ -290,6 +437,182 @@ if __name__ == "__main__":
     print(f"  표준편차: {np.std(bootstrap_cumulative)*100:.2f}%p")
     print(f"  최소: {np.min(bootstrap_cumulative)*100:.2f}%")
     print(f"  최대: {np.max(bootstrap_cumulative)*100:.2f}%")
+
+    # ========================================
+    # 6. 인출 시뮬레이션 테스트
+    # ========================================
+
+    print("\n" + "=" * 70)
+    print("인출 시뮬레이션 검증")
+    print("=" * 70)
+
+    # 테스트용 path: 첫 번째 rolling path 사용
+    test_path = rolling_paths[0]
+
+    # ========================================
+    # 테스트 1: 기본 케이스 (보정 없음)
+    # ========================================
+
+    print("\n[테스트 1] 기본 케이스 (adj_on=False)")
+    print("-" * 70)
+
+    result1 = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05,
+        band=0.15,
+        adj_on=False,
+        W0=100.0
+    )
+
+    print(f"초기 자산: 100.0")
+    print(f"초기 인출률: 5.0%")
+    print(f"Guardrail 밴드: ±15% (상한 5.75%, 하한 4.25%)")
+    print(f"\n결과:")
+    print(f"  최종 NAV: {result1['terminal_nav']:.2f}")
+    print(f"  총 누적 인출액: {result1['cum_withdraw']:.2f}")
+    print(f"  Ruin 발생: {'예' if result1['ruin_flag'] else '아니오'}")
+    print(f"  Terminal 실패: {'예' if result1['terminal_fail_flag'] else '아니오'} (기준: NAV < 50.0)")
+    print(f"  성공 여부: {'✅ 성공' if result1['success'] else '❌ 실패'}")
+
+    # ========================================
+    # 테스트 2: 높은 인출률 (파산 유도)
+    # ========================================
+
+    print("\n[테스트 2] 높은 인출률 (파산 유도)")
+    print("-" * 70)
+
+    result2 = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.15,
+        band=0.15,
+        adj_on=False,
+        W0=100.0
+    )
+
+    print(f"초기 자산: 100.0")
+    print(f"초기 인출률: 15.0% (매우 높음)")
+    print(f"Guardrail 밴드: ±15%")
+    print(f"\n결과:")
+    print(f"  최종 NAV: {result2['terminal_nav']:.2f}")
+    print(f"  총 누적 인출액: {result2['cum_withdraw']:.2f}")
+    print(f"  Ruin 발생: {'예' if result2['ruin_flag'] else '아니오'}")
+    print(f"  Terminal 실패: {'예' if result2['terminal_fail_flag'] else '아니오'}")
+    print(f"  성공 여부: {'✅ 성공' if result2['success'] else '❌ 실패'}")
+
+    if result2['ruin_flag']:
+        # 파산 발생 시점 찾기
+        ruin_month = np.where(result2['W_series'] <= 0)[0][0]
+        print(f"  파산 발생 시점: {ruin_month}개월째")
+
+    # ========================================
+    # 테스트 3: 수익률 보정 ON
+    # ========================================
+
+    print("\n[테스트 3] 수익률 보정 ON")
+    print("-" * 70)
+
+    result3 = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05,
+        band=0.15,
+        adj_on=True,
+        lookback=1,
+        thr_up=0.03,
+        thr_dn=-0.03,
+        adj_up=0.05,
+        adj_dn=-0.05,
+        W0=100.0
+    )
+
+    print(f"초기 자산: 100.0")
+    print(f"초기 인출률: 5.0%")
+    print(f"Guardrail 밴드: ±15%")
+    print(f"보정 설정:")
+    print(f"  - lookback: 1개월 (전월 수익률)")
+    print(f"  - 상향 트리거: >3%, 조정 +5%")
+    print(f"  - 하향 트리거: <-3%, 조정 -5%")
+    print(f"\n결과:")
+    print(f"  최종 NAV: {result3['terminal_nav']:.2f}")
+    print(f"  총 누적 인출액: {result3['cum_withdraw']:.2f}")
+    print(f"  Ruin 발생: {'예' if result3['ruin_flag'] else '아니오'}")
+    print(f"  Terminal 실패: {'예' if result3['terminal_fail_flag'] else '아니오'}")
+    print(f"  성공 여부: {'✅ 성공' if result3['success'] else '❌ 성공'}")
+
+    print(f"\n테스트 1 대비 차이:")
+    print(f"  총 인출액 차이: {result3['cum_withdraw'] - result1['cum_withdraw']:.2f} "
+          f"({(result3['cum_withdraw'] / result1['cum_withdraw'] - 1)*100:+.2f}%)")
+    print(f"  최종 NAV 차이: {result3['terminal_nav'] - result1['terminal_nav']:.2f} "
+          f"({(result3['terminal_nav'] / result1['terminal_nav'] - 1)*100:+.2f}%)")
+
+    # ========================================
+    # 테스트 4: 인출 순서 검증 (짧은 path)
+    # ========================================
+
+    print("\n[테스트 4] 인출 순서 검증 (Step-by-step)")
+    print("-" * 70)
+
+    # 짧은 path 생성 (3개월)
+    short_path = np.array([0.02, -0.03, 0.01])
+
+    result4 = simulate_withdrawal_on_path(
+        path_returns=short_path,
+        init_wr=0.06,
+        band=0.20,
+        adj_on=False,
+        W0=100.0
+    )
+
+    print(f"짧은 path: [2.0%, -3.0%, 1.0%]")
+    print(f"초기 자산: 100.0")
+    print(f"초기 인출률: 6.0% (월 0.5)")
+    print(f"Guardrail: 상한 7.2%, 하한 4.8%")
+
+    print("\n월별 계산 과정:")
+    W_prev = 100.0
+    base = 100.0 * 0.06 / 12
+
+    for t in range(3):
+        print(f"\n--- {t}개월째 ---")
+        r_t = short_path[t]
+
+        # Step 1: 수익률 적용
+        W_after_return = W_prev * (1 + r_t)
+        print(f"  1) 수익률 적용: {W_prev:.4f} × (1 + {r_t:.4f}) = {W_after_return:.4f}")
+
+        # Step 2: Base 인출액
+        print(f"  2) Base 인출액: {base:.4f}")
+
+        # Step 4: Guardrail 캡
+        current_wr = (base * 12) / W_after_return
+        upper_wr = 0.06 * 1.20
+        lower_wr = 0.06 * 0.80
+
+        print(f"  3) Current WR: ({base:.4f} × 12) / {W_after_return:.4f} = {current_wr:.4f} ({current_wr*100:.2f}%)")
+
+        if current_wr > upper_wr:
+            withdraw = upper_wr * W_after_return / 12
+            print(f"     ⚠️  상한 초과 → 캡 적용: {upper_wr:.4f} × {W_after_return:.4f} / 12 = {withdraw:.4f}")
+        elif current_wr < lower_wr:
+            withdraw = lower_wr * W_after_return / 12
+            print(f"     ⚠️  하한 미달 → 캡 적용: {lower_wr:.4f} × {W_after_return:.4f} / 12 = {withdraw:.4f}")
+        else:
+            withdraw = base
+            print(f"     ✅ 범위 내 → Base 사용: {withdraw:.4f}")
+
+        # Step 5: 인출 실행
+        W_after_withdraw = W_after_return - withdraw
+        print(f"  4) 인출 후 NAV: {W_after_return:.4f} - {withdraw:.4f} = {W_after_withdraw:.4f}")
+
+        # 실제 결과와 비교
+        actual_W = result4['W_series'][t + 1]
+        actual_withdraw = result4['withdraw_series'][t]
+
+        print(f"\n  검증: NAV {W_after_withdraw:.4f} vs {actual_W:.4f} "
+              f"({'✅ 일치' if abs(W_after_withdraw - actual_W) < 1e-6 else '❌ 불일치'})")
+        print(f"        인출 {withdraw:.4f} vs {actual_withdraw:.4f} "
+              f"({'✅ 일치' if abs(withdraw - actual_withdraw) < 1e-6 else '❌ 불일치'})")
+
+        W_prev = W_after_withdraw
 
     print("\n" + "=" * 70)
     print("검증 완료")
