@@ -140,3 +140,7 @@ Thumbs.db
 outputs/
 results/
 *.csv
+
+# Test results
+*_test.pkl
+*_test.xlsx
