@@ -239,12 +239,13 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
     # 초기 자산
     W_series[0] = W0
 
-    # Base 인출액 (고정, 매월 동일)
-    base_withdraw = W0 * init_wr / 12
+    # 초기 인출액 (이후 동적으로 변동)
+    target_ratio = init_wr / 12               # 목표 W/NAV 월비율
+    prev_withdraw = W0 * target_ratio         # 이전 달 인출액 (초기값)
 
-    # Guardrail 경계
-    upper_wr = init_wr * (1 + band)
-    lower_wr = init_wr * (1 - band)
+    # Guardrail 경계 (W/NAV 월비율 기준)
+    upper_ratio = target_ratio * (1 + band)   # 밴드 상한
+    lower_ratio = target_ratio * (1 - band)   # 밴드 하한
 
     # Debug용 중간 계산 기록
     if debug:
@@ -255,51 +256,52 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         # Step 1: 수익률 적용
         W_t = W_series[t] * (1 + path_returns[t])
 
-        # Step 2: Base 인출액
-        base = base_withdraw
+        # Step 2: 인출 시도액 결정
+        # 기본: 이전 달 인출액 유지
+        base = prev_withdraw
 
         # Step 3: 수익률 기반 보정 (adj_on=True일 때)
         if adj_on and t >= lookback:
-            # lookback 기간의 수익률 계산
             if lookback == 1:
                 prev_return = path_returns[t - 1]
-            else:  # lookback == 3
-                # 최근 lookback 개월의 누적 수익률
+            else:
                 prev_return = (1 + path_returns[t - lookback:t]).prod() - 1
 
-            # 보정 적용
             if prev_return > thr_up:
                 withdraw_adj = base * (1 + adj_up)
             elif prev_return < thr_dn:
-                withdraw_adj = base * (1 + adj_dn)  # adj_dn은 음수
+                withdraw_adj = base * (1 + adj_dn)
             else:
                 withdraw_adj = base
         else:
-            # 보정 없음 (adj_on=False 또는 lookback 데이터 부족)
             withdraw_adj = base
 
-        # Step 4: Guardrail 캡 적용
+        # Step 4: Guardrail — W/NAV 비율 밴드 적용
         cap_applied = 'None'
         if W_t > 0:
-            current_wr = (withdraw_adj * 12) / W_t
+            ratio = withdraw_adj / W_t     # W/NAV 월비율
 
-            if current_wr > upper_wr:
-                withdraw_final = upper_wr * W_t / 12
+            if ratio > upper_ratio:
+                # 비율 과다 → 인출 축소 (자본 보전)
+                withdraw_final = upper_ratio * W_t
                 cap_applied = 'Upper'
-            elif current_wr < lower_wr:
-                withdraw_final = lower_wr * W_t / 12
+            elif ratio < lower_ratio:
+                # 비율 과소 → 인출 확대 (수익 향유)
+                withdraw_final = lower_ratio * W_t
                 cap_applied = 'Lower'
             else:
                 withdraw_final = withdraw_adj
         else:
-            # 이미 파산 상태
-            current_wr = 0
+            ratio = 0
             withdraw_final = 0
             cap_applied = 'Ruin'
 
         # Step 5: 인출 실행
         W_t = W_t - withdraw_final
         W_t = max(W_t, 0)  # 음수 방지
+
+        # 이전 인출액 갱신 (다음 달의 기준이 됨)
+        prev_withdraw = withdraw_final
 
         # 결과 저장
         W_series[t + 1] = W_t
@@ -312,11 +314,11 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
                 'Month': t,
                 'Monthly_Return': path_returns[t],
                 'NAV_Before_Withdrawal': W_series[t] * (1 + path_returns[t]),
-                'Base_Withdrawal': base,
+                'Prev_Withdrawal': base,
                 'Adj_Withdrawal': withdraw_adj,
-                'Current_WR_Before_Cap': current_wr,
-                'Upper_Guardrail': upper_wr,
-                'Lower_Guardrail': lower_wr,
+                'W_NAV_Ratio': ratio,
+                'Upper_Ratio': upper_ratio,
+                'Lower_Ratio': lower_ratio,
                 'Cap_Applied': cap_applied,
                 'Final_Withdrawal': withdraw_final,
                 'NAV_After_Withdrawal': W_t,
@@ -569,6 +571,178 @@ def select_optimal(results: List[dict],
 
 
 # ============================================================================
+# GBM 경로 생성 및 벡터화 시뮬레이션
+# ============================================================================
+
+def generate_paths_gbm(mu, sigma, n_paths=1000, T_months=120, seed=42):
+    """
+    GBM (Geometric Brownian Motion)으로 월간 수익률 경로 생성
+
+    r_t = exp((mu/12 - 0.5*(sigma/sqrt(12))^2) + sigma/sqrt(12)*Z) - 1
+
+    Parameters
+    ----------
+    mu : float
+        연간 기대수익률 (예: 0.06 = 6%)
+    sigma : float
+        연간 변동성 (예: 0.10 = 10%)
+    n_paths : int
+        생성할 경로 수
+    T_months : int
+        경로 길이 (월 단위)
+    seed : int
+        랜덤 시드
+
+    Returns
+    -------
+    paths : np.ndarray
+        shape (n_paths, T_months) 월간 수익률 행렬
+    """
+    rng = np.random.RandomState(seed)
+
+    mu_monthly = mu / 12
+    sigma_monthly = sigma / np.sqrt(12)
+
+    Z = rng.standard_normal((n_paths, T_months))
+    log_returns = (mu_monthly - 0.5 * sigma_monthly**2) + sigma_monthly * Z
+    monthly_returns = np.exp(log_returns) - 1
+
+    return monthly_returns
+
+
+def simulate_withdrawal_on_paths_vectorized(paths_matrix, init_wr, band, W0=100.0):
+    """
+    벡터화된 인출 시뮬레이션 (다수 경로 동시 처리)
+
+    기존 simulate_withdrawal_on_path와 동일 로직을 numpy 행렬 연산으로 벡터화.
+    매월 순서: [수익률 적용 → base 인출 → guardrail 캡 → 인출 실행]
+    adj_on 미지원 (기존 grid_search에서도 adj_on=True 제거됨)
+
+    Parameters
+    ----------
+    paths_matrix : np.ndarray
+        shape (n_paths, T_months) 월간 수익률 행렬
+    init_wr : float
+        초기 연간 인출률
+    band : float
+        guardrail 밴드 (99.0이면 사실상 fixed)
+    W0 : float
+        초기 자산
+
+    Returns
+    -------
+    result : dict
+        W_terminal: (n_paths,) 최종 NAV
+        cum_withdraw: (n_paths,) 경로별 누적 인출액
+        withdraw_matrix: (n_paths, T_months) 월별 인출액
+        ruin_flags: (n_paths,) 파산 여부 (bool)
+    """
+    n_paths, T_months = paths_matrix.shape
+
+    W = np.full(n_paths, W0, dtype=np.float64)
+    withdraw_matrix = np.zeros((n_paths, T_months), dtype=np.float64)
+    ever_ruined = np.zeros(n_paths, dtype=bool)
+
+    # W/NAV 월비율 기준 밴드
+    target_ratio = init_wr / 12
+    upper_ratio = target_ratio * (1 + band)
+    lower_ratio = target_ratio * (1 - band)
+
+    # 이전 달 인출액 (경로별, 동적 변동)
+    prev_withdraw = np.full(n_paths, W0 * target_ratio, dtype=np.float64)
+
+    for t in range(T_months):
+        # Step 1: 수익률 적용
+        W = W * (1 + paths_matrix[:, t])
+
+        # Step 2: 인출 시도액 = 이전 달 인출액 유지
+        withdraw = prev_withdraw.copy()
+
+        # Step 4: Guardrail — W/NAV 비율 밴드 적용
+        alive = W > 0
+        safe_W = np.where(alive, W, 1.0)
+        ratio = np.where(alive, withdraw / safe_W, 0.0)
+
+        # Upper: 비율 과다 → 인출 축소
+        upper_mask = alive & (ratio > upper_ratio)
+        withdraw = np.where(upper_mask, upper_ratio * W, withdraw)
+
+        # Lower: 비율 과소 → 인출 확대
+        lower_mask = alive & (ratio < lower_ratio)
+        withdraw = np.where(lower_mask, lower_ratio * W, withdraw)
+
+        # 파산 경로: 인출 0
+        withdraw = np.where(alive, withdraw, 0.0)
+
+        # Step 5: 인출 실행
+        W = W - withdraw
+        W = np.maximum(W, 0.0)
+
+        # 이전 인출액 갱신
+        prev_withdraw = withdraw.copy()
+
+        withdraw_matrix[:, t] = withdraw
+        ever_ruined |= (W <= 0)
+
+    return {
+        'W_terminal': W.copy(),
+        'cum_withdraw': withdraw_matrix.sum(axis=1),
+        'withdraw_matrix': withdraw_matrix,
+        'ruin_flags': ever_ruined,
+    }
+
+
+def evaluate_gbm_strategy(sim_result, betas=(0.1, 0.25, 0.5, 0.75, 1.0), W0=100.0):
+    """
+    GBM 시뮬레이션 결과를 다중 beta로 평가 (시뮬레이션 1회로 5개 beta 처리)
+
+    Parameters
+    ----------
+    sim_result : dict
+        simulate_withdrawal_on_paths_vectorized 반환값
+    betas : tuple/list
+        terminal 실패 기준 beta 목록
+    W0 : float
+        초기 자산
+
+    Returns
+    -------
+    results : list[dict]
+        beta별 집계 메트릭
+    """
+    W_terminal = sim_result['W_terminal']
+    cum_withdraw = sim_result['cum_withdraw']
+    ruin_flags = sim_result['ruin_flags']
+    withdraw_matrix = sim_result['withdraw_matrix']
+    n_paths = len(W_terminal)
+
+    # CV 계산 (벡터화: 전체 row 기준)
+    row_means = withdraw_matrix.mean(axis=1)
+    row_stds = withdraw_matrix.std(axis=1, ddof=1)
+    cv_array = np.where(row_means > 0, row_stds / row_means, 0.0)
+
+    results = []
+    for beta in betas:
+        terminal_fail = W_terminal < beta * W0
+        success = ~ruin_flags & ~terminal_fail
+
+        results.append({
+            'x_success_rate': float(success.mean()),
+            'y_cum_withdraw_median': float(np.median(cum_withdraw)),
+            'y_cum_withdraw_mean': float(np.mean(cum_withdraw)),
+            'p_ruin': float(ruin_flags.mean()),
+            'p_terminal_fail': float(terminal_fail.mean()),
+            'p_fail': float(1 - success.mean()),
+            'cv_median': float(np.median(cv_array)),
+            'terminal_nav_median': float(np.median(W_terminal)),
+            'terminal_nav_mean': float(np.mean(W_terminal)),
+            'n_paths': n_paths,
+        })
+
+    return results
+
+
+# ============================================================================
 # 검증 코드
 # ============================================================================
 
@@ -814,7 +988,7 @@ if __name__ == "__main__":
     # 테스트 4: 인출 순서 검증 (짧은 path)
     # ========================================
 
-    print("\n[테스트 4] 인출 순서 검증 (Step-by-step)")
+    print("\n[테스트 4] 인출 순서 검증 (Step-by-step) - W/NAV 비율 밴드 방식")
     print("-" * 70)
 
     # 짧은 path 생성 (3개월)
@@ -831,11 +1005,14 @@ if __name__ == "__main__":
     print(f"짧은 path: [2.0%, -3.0%, 1.0%]")
     print(f"초기 자산: 100.0")
     print(f"초기 인출률: 6.0% (월 0.5)")
-    print(f"Guardrail: 상한 7.2%, 하한 4.8%")
+    target_r = 0.06 / 12
+    upper_r = target_r * 1.20
+    lower_r = target_r * 0.80
+    print(f"Guardrail: W/NAV 비율 밴드 {lower_r:.6f} ~ {upper_r:.6f}")
 
     print("\n월별 계산 과정:")
     W_prev = 100.0
-    base = 100.0 * 0.06 / 12
+    prev_wd = 100.0 * target_r   # 초기 인출액
 
     for t in range(3):
         print(f"\n--- {t}개월째 ---")
@@ -843,27 +1020,25 @@ if __name__ == "__main__":
 
         # Step 1: 수익률 적용
         W_after_return = W_prev * (1 + r_t)
-        print(f"  1) 수익률 적용: {W_prev:.4f} × (1 + {r_t:.4f}) = {W_after_return:.4f}")
+        print(f"  1) 수익률 적용: {W_prev:.4f} x (1 + {r_t:.4f}) = {W_after_return:.4f}")
 
-        # Step 2: Base 인출액
-        print(f"  2) Base 인출액: {base:.4f}")
+        # Step 2: 인출 시도액 = 이전 인출액
+        print(f"  2) 이전 인출액(시도): {prev_wd:.4f}")
 
-        # Step 4: Guardrail 캡
-        current_wr = (base * 12) / W_after_return
-        upper_wr = 0.06 * 1.20
-        lower_wr = 0.06 * 0.80
+        # Step 4: W/NAV 비율 밴드
+        ratio = prev_wd / W_after_return
+        print(f"  3) W/NAV 비율: {prev_wd:.4f} / {W_after_return:.4f} = {ratio:.6f}")
+        print(f"     밴드: [{lower_r:.6f}, {upper_r:.6f}]")
 
-        print(f"  3) Current WR: ({base:.4f} × 12) / {W_after_return:.4f} = {current_wr:.4f} ({current_wr*100:.2f}%)")
-
-        if current_wr > upper_wr:
-            withdraw = upper_wr * W_after_return / 12
-            print(f"     [WARN]  상한 초과 -> 캡 적용: {upper_wr:.4f} × {W_after_return:.4f} / 12 = {withdraw:.4f}")
-        elif current_wr < lower_wr:
-            withdraw = lower_wr * W_after_return / 12
-            print(f"     [WARN]  하한 미달 -> 캡 적용: {lower_wr:.4f} × {W_after_return:.4f} / 12 = {withdraw:.4f}")
+        if ratio > upper_r:
+            withdraw = upper_r * W_after_return
+            print(f"     [WARN] 상한 초과 -> 축소: {upper_r:.6f} x {W_after_return:.4f} = {withdraw:.4f}")
+        elif ratio < lower_r:
+            withdraw = lower_r * W_after_return
+            print(f"     [WARN] 하한 미달 -> 확대: {lower_r:.6f} x {W_after_return:.4f} = {withdraw:.4f}")
         else:
-            withdraw = base
-            print(f"     [OK] 범위 내 -> Base 사용: {withdraw:.4f}")
+            withdraw = prev_wd
+            print(f"     [OK] 밴드 내 -> 이전 인출액 유지: {withdraw:.4f}")
 
         # Step 5: 인출 실행
         W_after_withdraw = W_after_return - withdraw
@@ -878,6 +1053,7 @@ if __name__ == "__main__":
         print(f"        인출 {withdraw:.4f} vs {actual_withdraw:.4f} "
               f"({'[OK] 일치' if abs(withdraw - actual_withdraw) < 1e-6 else '[FAIL] 불일치'})")
 
+        prev_wd = withdraw
         W_prev = W_after_withdraw
 
     # ========================================
@@ -1055,6 +1231,96 @@ if __name__ == "__main__":
         pickle.dump(grid_results, f)
 
     print(f"\n[OK] 결과 저장 완료: grid_test_results.pkl ({len(grid_results)}개 조합)")
+
+    # ========================================
+    # 8. GBM 벡터화 함수 검증
+    # ========================================
+
+    print("\n" + "=" * 70)
+    print("GBM 벡터화 함수 검증")
+    print("=" * 70)
+
+    # GBM 경로 생성 테스트
+    print("\n[테스트 5] GBM 경로 생성")
+    print("-" * 70)
+
+    gbm_paths = generate_paths_gbm(mu=0.06, sigma=0.10, n_paths=1000, T_months=120, seed=42)
+    print(f"[OK] GBM 경로 생성 완료: shape={gbm_paths.shape}")
+    print(f"  월 평균 수익률: {gbm_paths.mean()*100:.3f}%")
+    print(f"  월 표준편차: {gbm_paths.std()*100:.3f}%")
+    ann_ret = (1 + gbm_paths.mean())**12 - 1
+    ann_vol = gbm_paths.std() * np.sqrt(12)
+    print(f"  연환산 수익률: {ann_ret*100:.2f}% (목표: 6.00%)")
+    print(f"  연환산 변동성: {ann_vol*100:.2f}% (목표: 10.00%)")
+
+    # 벡터화 vs Scalar 비교 테스트
+    print("\n[테스트 6] 벡터화 vs Scalar 일치 확인")
+    print("-" * 70)
+
+    test_n_paths = 10
+    test_T = 24
+    test_paths_gbm = generate_paths_gbm(mu=0.07, sigma=0.12, n_paths=test_n_paths, T_months=test_T, seed=123)
+
+    test_params = [
+        {'init_wr': 0.05, 'band': 99.0},   # fixed
+        {'init_wr': 0.08, 'band': 0.10},    # guardrail ±10%
+        {'init_wr': 0.10, 'band': 0.15},    # guardrail ±15%
+    ]
+
+    all_match = True
+    for params in test_params:
+        init_wr_t = params['init_wr']
+        band_t = params['band']
+
+        # 벡터화 버전
+        vec_result = simulate_withdrawal_on_paths_vectorized(test_paths_gbm, init_wr_t, band_t, W0=100.0)
+
+        # Scalar 버전 (각 path별)
+        max_diff_W = 0.0
+        max_diff_cum = 0.0
+        ruin_match_flag = True
+
+        for i in range(test_n_paths):
+            scalar_result = simulate_withdrawal_on_path(
+                path_returns=test_paths_gbm[i],
+                init_wr=init_wr_t, band=band_t, adj_on=False,
+                beta=0.5, W0=100.0, debug=False
+            )
+
+            diff_W = abs(vec_result['W_terminal'][i] - scalar_result['terminal_nav'])
+            diff_cum = abs(vec_result['cum_withdraw'][i] - scalar_result['cum_withdraw'])
+            max_diff_W = max(max_diff_W, diff_W)
+            max_diff_cum = max(max_diff_cum, diff_cum)
+
+            if vec_result['ruin_flags'][i] != scalar_result['ruin_flag']:
+                ruin_match_flag = False
+
+        tol = 1e-8
+        match = max_diff_W < tol and max_diff_cum < tol and ruin_match_flag
+        status = "[OK]" if match else "[FAIL]"
+        if not match:
+            all_match = False
+
+        band_label = "fixed" if band_t == 99.0 else f"\u00b1{band_t*100:.0f}%"
+        print(f"  {status} init_wr={init_wr_t*100:.0f}%, band={band_label}: "
+              f"max_diff(W)={max_diff_W:.2e}, max_diff(cum)={max_diff_cum:.2e}, "
+              f"ruin_match={'OK' if ruin_match_flag else 'FAIL'}")
+
+    print(f"\n{'[OK] 벡터화 검증 통과' if all_match else '[FAIL] 벡터화 검증 실패'}")
+
+    # evaluate_gbm_strategy 테스트
+    print("\n[테스트 7] evaluate_gbm_strategy 다중 beta 평가")
+    print("-" * 70)
+
+    gbm_test_paths_eval = generate_paths_gbm(mu=0.06, sigma=0.10, n_paths=500, T_months=120, seed=42)
+    sim_eval = simulate_withdrawal_on_paths_vectorized(gbm_test_paths_eval, init_wr=0.05, band=0.10, W0=100.0)
+    eval_results = evaluate_gbm_strategy(sim_eval, betas=[0.1, 0.5, 1.0], W0=100.0)
+
+    for idx_eval, beta_val in enumerate([0.1, 0.5, 1.0]):
+        r_eval = eval_results[idx_eval]
+        print(f"  Beta={beta_val}: 성공률={r_eval['x_success_rate']*100:.1f}%, "
+              f"파산률={r_eval['p_ruin']*100:.2f}%, "
+              f"누적인출={r_eval['y_cum_withdraw_median']:.1f}")
 
     print("\n" + "=" * 70)
     print("검증 완료")
