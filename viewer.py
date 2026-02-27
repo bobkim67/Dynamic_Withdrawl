@@ -1,18 +1,13 @@
 """
-퇴직 포트폴리오 인출 전략 분석기 (Streamlit Viewer v5.1 — 4탭 스토리)
+퇴직 포트폴리오 인출 전략 분석기 (Streamlit Viewer v7.0 — 6탭 설득 흐름)
 ============================================================================
-Grid Search + GBM 결과를 4개 탭 설득 흐름으로 시각화:
-  1) Guardrail 효과 시각화 — 금융위기형 연속 시나리오 (급락→회복) 메커니즘
-  2) 이론 분석 (GBM) — 변동성별 Fixed vs Guardrail 체계 비교
-  3) 실제 포트폴리오 검증 — Historical 데이터 기반 검증
-  4) Band 최적화 — 최적 Band 탐색 및 교차검증
-
-v5.1 변경:
-  - 슬라이더 레이블 수정 (정수 기반)
-  - 시나리오 극단화 + 목표달성 관점 메트릭
-  - 사이드바 Beta/Path Method → 모든 탭 연동, 탭 내 중복 위젯 삭제
-  - Band는 ±5%(최적값) 고정 (Tab 4 제외)
-  - 빈 콘텐츠 QC
+Grid Search + GBM 결과를 6개 탭 설득 흐름으로 시각화:
+  1) 가정 — 인출 엔진, 경로 생성 방법, 포트폴리오 구성
+  2) Guardrail 효과 — Fixed vs Guardrail 비교 인포그래픽
+  3) 시뮬레이션 — 실제 과거 데이터 기반 스파게티 차트 + 기말잔액 분포
+  4) 데이터 검증 — Historical + GBM 히트맵/곡선 비교
+  5) Band 최적화 — Band별 성공률 곡선
+  6) 분석결과 — 효과 분석 + 종합 분석결과
 
 독립 실행: streamlit run viewer.py
 UI 언어: 한국어 + 영문 금융용어 병기.
@@ -236,6 +231,348 @@ def _build_path_trace(paths, color, name, alpha=0.12):
 
 
 # ============================================================================
+# Tab 가정: 분석 전제조건 설명
+# ============================================================================
+
+def render_tab_assumptions(init_wr):
+    """가정 탭: 인출 엔진, 경로 생성, 포트폴리오 구성 설명."""
+
+    st.markdown("### 분석 전제조건 (Assumptions)")
+
+    # ========================================
+    # 1. 인출 엔진 작동 방식
+    # ========================================
+    st.subheader("1. 인출 엔진 작동 방식")
+
+    st.markdown("""
+#### 기본 변수 정의
+
+| 기호 | 정의 | 설명 |
+|:---:|---|---|
+| **W\u2080** | 초기 자산 (Initial Wealth) | 시뮬레이션 시작 시점의 포트폴리오 가치. 본 분석에서는 **100**으로 정규화합니다. |
+| **W\u209C** | t월 말 잔액 (NAV) | 수익률 적용 및 인출 후 남은 포트폴리오 가치 |
+| **r\u209C** | t월 수익률 | 해당 월의 포트폴리오 수익률 |
+| **init_wr** | 초기 인출률 (Initial Withdrawal Rate) | 연간 인출률. 예: 5% = W\u2080 대비 연 5 인출 |
+| **band** | Guardrail 밴드 폭 | 목표 비율 대비 허용 편차. 예: \u00b15% |
+
+#### 초기 설정
+
+시뮬레이션 시작 시 아래 값들이 한 번 계산됩니다.
+
+- **월 인출비율 (m)**: `m = init_wr / 12`
+- **초기 인출액**: `prev_withdraw = W\u2080 \u00d7 m`
+- **밴드 상한**: `upper = m \u00d7 (1 + band)`
+- **밴드 하한**: `lower = m \u00d7 (1 - band)`
+""")
+
+    _wr_example = init_wr
+    _target = _wr_example / 12
+    _band_pct = 0.05
+    _upper = _target * (1 + _band_pct)
+    _lower = _target * (1 - _band_pct)
+    _init_w = _target * 100.0
+
+    st.info(
+        f"**현재 설정 (사이드바 연동)**: init_wr = {_wr_example*100:.0f}% \u2192 "
+        f"m = {_target*100:.4f}%/월, "
+        f"초기 인출액 = {_init_w:.2f}/월 (W\u2080=100 기준), "
+        f"밴드 = \u00b15% \u2192 upper {_upper*100:.4f}% / lower {_lower*100:.4f}%"
+    )
+
+    st.markdown("""
+#### 매월 시뮬레이션 5단계
+
+아래 5단계가 **매월 순서대로** 반복됩니다 (t = 1, 2, ..., T).
+""")
+
+    st.markdown("""
+**Step 1. 수익률 적용**
+
+```
+W_t = W_{t-1} × (1 + r_t)
+```
+
+전월 말 잔액에 해당 월 수익률을 적용합니다. 이 시점의 W\u209C는 인출 전 NAV입니다.
+
+---
+
+**Step 2. 인출 시도액 결정**
+
+```
+withdraw = prev_withdraw   (이전 달 실제 인출액을 그대로 시도)
+```
+
+고정 인출(Fixed)에서는 매월 `W\u2080 \u00d7 m`을 인출하지만,
+Guardrail에서는 **직전 달의 실제 인출액**을 base로 가져옵니다.
+최초 달(t=1)에서는 `prev_withdraw = W\u2080 \u00d7 m`입니다.
+
+---
+
+**Step 3. W/NAV 비율 계산**
+
+```
+ratio = withdraw / W_t
+```
+
+현재 인출 시도액이 인출 전 NAV 대비 어느 비율인지 계산합니다.
+
+---
+
+**Step 4. Guardrail 밴드 보정**
+
+비율 기준(upper, lower)은 시뮬레이션 시작 시 한 번 계산되는 **고정 상수**입니다.
+하지만 매월 W\u209C가 달라지므로, **절대 인출 허용 범위**는 NAV에 비례하여 매월 변동합니다.
+
+```
+매월 인출 허용 범위 (절대 금액):
+  상한 금액 = upper × W_t = m × (1+band) × W_t
+  하한 금액 = lower × W_t = m × (1-band) × W_t
+```
+
+| 조건 | 조정 | 의미 |
+|---|---|---|
+| `ratio > upper` | `withdraw = upper \u00d7 W\u209C` | NAV 하락 \u2192 인출 비율 과다 \u2192 **인출 축소** |
+| `ratio < lower` | `withdraw = lower \u00d7 W\u209C` | NAV 상승 \u2192 인출 비율 과소 \u2192 **인출 확대** |
+| 밴드 내 | `withdraw = prev_withdraw` (유지) | 조정 없음 |
+
+---
+
+**Step 5. 인출 실행 및 base 갱신**
+
+```
+W_t = W_t - withdraw_final    (인출 후 잔액)
+prev_withdraw = withdraw_final (다음 달 base 갱신)
+```
+
+인출 후 NAV가 0 이하가 되면 **파산(Ruin)** 처리됩니다.
+""")
+
+    # ========================================
+    # 밴드 보정 후 base 갱신 예시
+    # ========================================
+    _m = _wr_example / 12
+    _up = _m * (1 + _band_pct)
+    _lo = _m * (1 - _band_pct)
+    _pw0 = 100.0 * _m
+
+    st.markdown("#### 밴드 보정 후 base 갱신 — 수치 예시")
+    st.caption(
+        f"init_wr={_wr_example*100:.0f}%, band=\u00b15%, W\u2080=100 | "
+        f"m={_m*100:.4f}%, upper={_up*100:.4f}%, lower={_lo*100:.4f}%"
+    )
+
+    # 3개월 추적 예시 테이블
+    # Month 1: NAV 하락 → 상한 초과 → 축소
+    w1_nav = 90.0
+    w1_ratio = _pw0 / w1_nav
+    w1_final = _up * w1_nav  # 상한 적용
+    w1_after = w1_nav - w1_final
+
+    # Month 2: NAV 유지 → 밴드 내 → 축소 유지
+    w2_nav = w1_after * 1.005  # 약간 상승
+    w2_ratio = w1_final / w2_nav
+    w2_in_band = _lo <= w2_ratio <= _up
+    w2_final = w1_final if w2_in_band else (_up * w2_nav if w2_ratio > _up else _lo * w2_nav)
+    w2_after = w2_nav - w2_final
+
+    # Month 3: NAV 큰 회복 → 하한 미달 → 확대
+    w3_nav = w2_after * 1.15  # 큰 회복
+    w3_ratio = w2_final / w3_nav
+    w3_in_band = _lo <= w3_ratio <= _up
+    w3_final = w2_final if w3_in_band else (_up * w3_nav if w3_ratio > _up else _lo * w3_nav)
+    w3_after = w3_nav - w3_final
+
+    example_data = pd.DataFrame([
+        {
+            '월': '0 (초기)',
+            'NAV (인출 전)': f'{100.0:.2f}',
+            '시도액 (prev_withdraw)': f'{_pw0:.4f}',
+            'ratio (시도/NAV)': f'{_pw0/100.0*100:.4f}%',
+            '밴드 판정': '—',
+            '실제 인출액': f'{_pw0:.4f}',
+            'NAV (인출 후)': f'{100.0-_pw0:.2f}',
+            '다음달 base': f'{_pw0:.4f}',
+        },
+        {
+            '월': '1 (하락)',
+            'NAV (인출 전)': f'{w1_nav:.2f}',
+            '시도액 (prev_withdraw)': f'{_pw0:.4f}',
+            'ratio (시도/NAV)': f'{w1_ratio*100:.4f}%',
+            '밴드 판정': f'상한 초과 \u2192 축소',
+            '실제 인출액': f'{w1_final:.4f}',
+            'NAV (인출 후)': f'{w1_after:.2f}',
+            '다음달 base': f'{w1_final:.4f}',
+        },
+        {
+            '월': '2 (유지)',
+            'NAV (인출 전)': f'{w2_nav:.2f}',
+            '시도액 (prev_withdraw)': f'{w1_final:.4f}',
+            'ratio (시도/NAV)': f'{w2_ratio*100:.4f}%',
+            '밴드 판정': '밴드 내 \u2192 유지',
+            '실제 인출액': f'{w2_final:.4f}',
+            'NAV (인출 후)': f'{w2_after:.2f}',
+            '다음달 base': f'{w2_final:.4f}',
+        },
+        {
+            '월': '3 (회복)',
+            'NAV (인출 전)': f'{w3_nav:.2f}',
+            '시도액 (prev_withdraw)': f'{w2_final:.4f}',
+            'ratio (시도/NAV)': f'{w3_ratio*100:.4f}%',
+            '밴드 판정': '하한 미달 \u2192 확대' if not w3_in_band and w3_ratio < _lo else '밴드 내 \u2192 유지',
+            '실제 인출액': f'{w3_final:.4f}',
+            'NAV (인출 후)': f'{w3_after:.2f}',
+            '다음달 base': f'{w3_final:.4f}',
+        },
+    ])
+    st.dataframe(example_data, width='stretch', hide_index=True)
+
+    st.markdown(f"""
+**포인트 정리**
+
+1. **비율 기준은 고정**: upper={_up*100:.4f}%, lower={_lo*100:.4f}%는 시뮬레이션 내내 변하지 않습니다.
+2. **절대 금액 기준은 NAV에 연동**: 매월 허용 인출 범위는 `[lower \u00d7 W\u209C, upper \u00d7 W\u209C]`이므로 NAV가 변하면 허용 범위도 변합니다.
+3. **밴드 벗어나면 base가 갱신**: 조정된 인출액이 `prev_withdraw`가 되어 다음 달 시도액이 됩니다. 원래 초기값(`W\u2080 \u00d7 m`)으로 리셋되지 않습니다.
+4. **밴드 내이면 유지**: 축소된 금액이 밴드 내에 있으면 계속 축소된 수준이 유지됩니다. 원래 수준으로 돌아가려면 NAV가 충분히 회복하여 ratio가 하한 아래로 내려가야 합니다.
+""")
+
+    # ========================================
+    # 2. 수익률 경로 생성
+    # ========================================
+    st.markdown("---")
+    st.subheader("2. 수익률 경로 생성 방법")
+
+    col_roll, col_boot = st.columns(2)
+
+    with col_roll:
+        st.markdown("""
+**Rolling Window**
+
+- 2001\u20132025 일별 수익률 \u2192 월별 변환
+- 연속 120개월 구간을 **1개월씩 이동**
+- 약 **181개 경로** 생성
+- 실제 시장 순서 보존 (시계열 상관 유지)
+""")
+
+        # Rolling 개념도
+        fig_roll = go.Figure()
+        for i in range(5):
+            x0 = i * 2
+            fig_roll.add_shape(type='rect', x0=x0, x1=x0 + 10, y0=4 - i, y1=4.6 - i,
+                               fillcolor=f'rgba(33,150,243,{0.3 + i*0.12})',
+                               line=dict(color='#1565C0', width=1))
+            fig_roll.add_annotation(x=x0 + 5, y=4.3 - i, text=f'경로 {i+1}',
+                                    showarrow=False, font=dict(size=9, color='#1565C0'))
+        fig_roll.add_annotation(x=7, y=-0.3, text='... 총 ~181개 경로',
+                                showarrow=False, font=dict(size=10, color='#64748b'))
+        fig_roll.update_layout(
+            height=200, margin=dict(t=5, b=30, l=10, r=10),
+            xaxis=dict(title='기간 (연)', showgrid=False, range=[-0.5, 19]),
+            yaxis=dict(showticklabels=False, showgrid=False, range=[-1, 5.5]),
+            plot_bgcolor='#f8fafc',
+        )
+        st.plotly_chart(fig_roll, use_container_width=True)
+
+    with col_boot:
+        st.markdown("""
+**Block Bootstrap**
+
+- 약 289개월의 월간 수익률에서 **랜덤 시작점**을 골라 연속 12개월을 추출
+- 이 블록을 **10번 반복** 추출하여 120개월(10년)을 이어붙임
+- 5,000개 경로 생성 후 **181개 샘플링** (seed=42)
+- 시장 순서 뒤섞임 \u2192 다양한 시나리오 조합 가능
+""")
+
+        # Bootstrap 개념도
+        fig_boot = go.Figure()
+        boot_colors = ['#4CAF50', '#FF9800', '#E91E63', '#9C27B0', '#00BCD4',
+                        '#795548', '#607D8B', '#F44336', '#3F51B5', '#009688']
+        rng_boot = np.random.RandomState(42)
+        for i in range(2):
+            blocks = rng_boot.choice(10, 10, replace=True)
+            for j, b in enumerate(blocks):
+                x0 = j * 1.2
+                fig_boot.add_shape(type='rect', x0=x0, x1=x0 + 1.1, y0=1.5 - i * 1.8, y1=2.1 - i * 1.8,
+                                   fillcolor=boot_colors[b],
+                                   line=dict(color='white', width=0.5))
+            fig_boot.add_annotation(x=12.5, y=1.8 - i * 1.8, text=f'경로 {i+1}',
+                                    showarrow=False, font=dict(size=9, color='#333'), xanchor='left')
+        fig_boot.add_annotation(x=6, y=-1.5, text='... 총 181개 경로 (seed=42)',
+                                showarrow=False, font=dict(size=10, color='#64748b'))
+        fig_boot.update_layout(
+            height=200, margin=dict(t=5, b=30, l=10, r=10),
+            xaxis=dict(title='블록 (12개월 단위)', showgrid=False, range=[-0.5, 16]),
+            yaxis=dict(showticklabels=False, showgrid=False, range=[-2.5, 3]),
+            plot_bgcolor='#f8fafc',
+        )
+        st.plotly_chart(fig_boot, use_container_width=True)
+
+    # ========================================
+    # 3. 포트폴리오 구성
+    # ========================================
+    st.markdown("---")
+    st.subheader("3. 포트폴리오 구성")
+
+    st.markdown(
+        "각 수익률 목표별 포트폴리오는 "
+        "**Long-Term Capital Market Assumptions (LT-CMA)** 기반의 자산배분입니다."
+    )
+
+    # 포트폴리오 데이터 준비
+    port_names = sorted(PORTFOLIOS.keys())
+    all_assets = set()
+    for pinfo in PORTFOLIOS.values():
+        all_assets.update(pinfo['weights'].keys())
+    all_assets = sorted(all_assets)
+
+    # 누적 Bar 차트
+    asset_colors = {
+        '한국주식': '#E91E63',
+        '미국성장주': '#2196F3',
+        '한국종합채권': '#4CAF50',
+        '한국국고채10년': '#8BC34A',
+        '신흥국달러채권': '#FF9800',
+        '금': '#FFC107',
+    }
+
+    fig_port = go.Figure()
+    for asset in all_assets:
+        vals = [PORTFOLIOS[p]['weights'].get(asset, 0) for p in port_names]
+        fig_port.add_trace(go.Bar(
+            x=port_names, y=vals, name=asset,
+            marker_color=asset_colors.get(asset, '#999'),
+            text=[f'{v:.1f}' if v > 2 else '' for v in vals],
+            textposition='inside', textfont=dict(size=9),
+        ))
+
+    fig_port.update_layout(
+        barmode='stack',
+        xaxis_title='포트폴리오', yaxis_title='비중 (%)',
+        height=380, margin=dict(t=10, b=30, l=50, r=20),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5),
+        yaxis=dict(ticksuffix='%'),
+    )
+    st.plotly_chart(fig_port, use_container_width=True)
+
+    # 테이블
+    table_rows = []
+    for p in port_names:
+        pinfo = PORTFOLIOS[p]
+        weights_str = " / ".join(f"{k} {v:.1f}%" for k, v in pinfo['weights'].items())
+        table_rows.append({
+            '포트폴리오': p,
+            '목표수익률 (%)': pinfo['target_return'],
+            '목표위험 (%)': pinfo['target_risk'],
+            '자산배분': weights_str,
+        })
+    st.dataframe(pd.DataFrame(table_rows), width='stretch', hide_index=True)
+
+    st.caption(
+        "벤치마크 데이터 기간: 2001.01 ~ 2025.12 (약 25년). "
+        "자산군별 수익지수를 기반으로 일별 수익률을 계산하여 포트폴리오 수익률을 산출합니다."
+    )
+
+
+# ============================================================================
 # Tab 1: Guardrail 효과 시각화 (3시나리오)
 # ============================================================================
 
@@ -308,12 +645,6 @@ def render_tab1_mechanism(beta, path_method, init_wr):
     """, unsafe_allow_html=True)
 
     # ===== 고정 인출 vs Guardrail 비교 시뮬레이션 =====
-    # 동일한 시장 경로에서 두 전략이 어떻게 다른 결과를 만드는지 보여주는 핵심 차트
-    st.markdown(
-        '<p style="font-size:0.95em; font-weight:600; color:#334155; '
-        'margin-bottom:4px;">같은 시장, 다른 인출 규칙 → 다른 결과</p>',
-        unsafe_allow_html=True,
-    )
 
     # --- 시뮬레이션 파라미터 (사이드바 연동) ---
     _np_seed = 7
@@ -325,8 +656,7 @@ def render_tab1_mechanism(beta, path_method, init_wr):
     _nav0 = 100.0
     _w0 = _target_ratio * _nav0                 # 초기 인출액
 
-    # --- 수익률 경로 (regime-stitched) ---
-    # 4개 국면: 안정기 → 하락기 → 회복기 → 후기 랠리
+    # --- 수익률 경로 (4 국면: 안정기 → 하락기 → 회복기 → 후기 랠리) ---
     rng = np.random.RandomState(_np_seed)
     _r1 = rng.normal(0.005, 0.020, 60)   # 안정기
     _r2 = rng.normal(-0.018, 0.038, 60)  # 하락기 (GFC급)
@@ -373,13 +703,232 @@ def render_tab1_mechanism(beta, path_method, init_wr):
     _end_f = _nav_f[-1]
     _end_g = _nav_g[-1]
 
-    # --- 상단 차트: NAV 경로 비교 ---
-    fig_persuade = make_subplots(
-        rows=2, cols=1, row_heights=[0.75, 0.25],
-        vertical_spacing=0.06, shared_xaxes=True,
+    # --- 누적인출금 시계열 계산 ---
+    _cum_f = np.cumsum(_wf)
+    _cum_g = np.cumsum(_wg)
+
+    # --- NAV 차트의 Fixed ruin 시점 (밴드 차트 참조용) ---
+    _main_ruin_idx = np.where((_nav_f == 0) & (_time > 0))[0]
+    _main_ruin_t = int(_main_ruin_idx[0]) if len(_main_ruin_idx) > 0 else -1
+
+    # ===== 밴드 메커니즘 차트 (상단, 독립 시뮬레이션) =====
+    st.markdown(
+        '<p style="font-size:0.95em; font-weight:600; color:#334155; '
+        'margin: 16px 0 4px 0;">Guardrail 밴드 메커니즘: 인출은 밴드 안에서만</p>',
+        unsafe_allow_html=True,
     )
 
-    # 하락기 / 회복기 배경 음영 — 구간 전체를 파스텔 톤으로 칠함
+    # --- 밴드 차트 전용 시뮬레이션 (완만한 수익률, ±15% 밴드) ---
+    _bm_band = 0.15                              # 시각적으로 넓은 밴드
+    _bm_target = _target_ratio
+    _bm_hi = _bm_target * (1 + _bm_band)
+    _bm_lo = _bm_target * (1 - _bm_band)
+    _bm_w0 = _bm_target * _nav0
+
+    _bm_rng = np.random.RandomState(99)
+    _bm_rets = np.concatenate([
+        _bm_rng.normal(0.005, 0.015, 60),        # 안정기
+        _bm_rng.normal(-0.005, 0.020, 60),        # 하락기 (완만)
+        _bm_rng.normal(0.010, 0.015, 60),         # 회복기
+        _bm_rng.normal(0.006, 0.012, 60),         # 후기
+    ])
+
+    # Fixed 인출
+    _bm_nav_f = np.zeros(_n + 1); _bm_nav_f[0] = _nav0
+    _bm_wf = np.zeros(_n + 1); _bm_wf[0] = _bm_w0
+    for _t in range(_n):
+        _g = _bm_nav_f[_t] * (1 + _bm_rets[_t])
+        if _g > 0:
+            _bm_wf[_t + 1] = _bm_w0
+            _bm_nav_f[_t + 1] = max(_g - _bm_w0, 0)
+        else:
+            _bm_wf[_t + 1] = 0; _bm_nav_f[_t + 1] = 0
+
+    # Guardrail 인출
+    _bm_nav_g = np.zeros(_n + 1); _bm_nav_g[0] = _nav0
+    _bm_wg = np.zeros(_n + 1); _bm_wg[0] = _bm_w0
+    for _t in range(_n):
+        _g = _bm_nav_g[_t] * (1 + _bm_rets[_t])
+        if _g <= 0:
+            _bm_nav_g[_t + 1] = 0; _bm_wg[_t + 1] = 0; continue
+        _ratio = _bm_wg[_t] / _g
+        if _ratio > _bm_hi:
+            _bm_wg[_t + 1] = _bm_hi * _g
+        elif _ratio < _bm_lo:
+            _bm_wg[_t + 1] = _bm_lo * _g
+        else:
+            _bm_wg[_t + 1] = _bm_wg[_t]
+        _bm_nav_g[_t + 1] = max(_g - _bm_wg[_t + 1], 0)
+
+    # 정규화: W / (pre_withdrawal_NAV * target) → 1.0 = 목표
+    _bm_grown_f = np.zeros(_n + 1); _bm_grown_f[0] = _nav0
+    _bm_grown_g = np.zeros(_n + 1); _bm_grown_g[0] = _nav0
+    _bm_grown_f[1:] = _bm_nav_f[1:] + _bm_wf[1:]
+    _bm_grown_g[1:] = _bm_nav_g[1:] + _bm_wg[1:]
+    _bm_norm_f = np.where(_bm_grown_f > 0,
+                          _bm_wf / (_bm_grown_f * _bm_target), 0)
+    _bm_norm_g = np.where(_bm_grown_g > 0,
+                          _bm_wg / (_bm_grown_g * _bm_target), 0)
+
+    # NAV 차트 ruin 시점 이후 → Fixed 비율 강제 0 (동기화)
+    if _main_ruin_t > 0:
+        _bm_norm_f[_main_ruin_t:] = 0
+
+    _bm_band_hi = 1 + _bm_band   # 1.15
+    _bm_band_lo = 1 - _bm_band   # 0.85
+    _bm_time = np.arange(_n + 1)
+
+    # 4국면 정의 (NAV 차트와 동일 구간)
+    _bm_phases = [
+        (0, 60, 'rgba(226,232,240,0.15)', '안정기', '#94a3b8'),
+        (60, 120, 'rgba(254,202,202,0.30)', '하락기', '#f87171'),
+        (120, 180, 'rgba(187,247,208,0.30)', '회복기', '#4ade80'),
+        (180, _n, 'rgba(191,219,254,0.15)', '후기 랠리', '#93c5fd'),
+    ]
+
+    fig_band = go.Figure()
+
+    # 국면별 배경 음영
+    for _x0, _x1, _fc, _lbl, _lc in _bm_phases:
+        fig_band.add_vrect(x0=_x0, x1=_x1, fillcolor=_fc, line_width=0)
+        fig_band.add_annotation(
+            x=(_x0 + _x1) / 2, y=1.0, yref='paper',
+            text=f'<i>{_lbl}</i>', showarrow=False,
+            font=dict(size=9, color=_lc), yanchor='top')
+
+    # 밴드 fill
+    fig_band.add_trace(go.Scatter(
+        x=np.concatenate([_bm_time, _bm_time[::-1]]),
+        y=np.concatenate([np.full(_n + 1, _bm_band_hi),
+                          np.full(_n + 1, _bm_band_lo)[::-1]]),
+        fill='toself', fillcolor='rgba(34,197,94,0.30)',
+        line=dict(width=0), showlegend=True,
+        name=f'허용 밴드 (±{_bm_band*100:.0f}%)',
+        hoverinfo='skip',
+    ))
+    # 밴드 경계선 (dashed)
+    for _bv in [_bm_band_hi, _bm_band_lo]:
+        fig_band.add_trace(go.Scatter(
+            x=_bm_time, y=np.full(_n + 1, _bv), mode='lines',
+            line=dict(color='rgba(22,163,106,0.5)', width=1.5, dash='dot'),
+            showlegend=False, hoverinfo='skip',
+        ))
+
+    # 중심선
+    fig_band.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8',
+                       line_width=1)
+
+    # Guardrail
+    fig_band.add_trace(go.Scatter(
+        x=_bm_time, y=_bm_norm_g, mode='lines',
+        line=dict(color='#16a34a', width=2.5),
+        name='Guardrail',
+        hovertemplate='%{x}개월<br>비율: %{y:.3f}<extra></extra>',
+    ))
+
+    # Fixed (자연스러운 흐름, cap 없음)
+    fig_band.add_trace(go.Scatter(
+        x=_bm_time, y=_bm_norm_f, mode='lines',
+        line=dict(color='#dc2626', width=2, dash='dash'),
+        name='고정 인출',
+        hovertemplate='%{x}개월<br>비율: %{y:.3f}<extra></extra>',
+    ))
+
+    # 밴드 터치 마커
+    _hit_up = np.where((_bm_norm_g >= _bm_band_hi - 0.001) &
+                        (_bm_time > 0))[0]
+    _hit_lo = np.where((_bm_norm_g > 0) &
+                        (_bm_norm_g <= _bm_band_lo + 0.001) &
+                        (_bm_time > 0))[0]
+    if len(_hit_up) > 0:
+        fig_band.add_trace(go.Scatter(
+            x=_hit_up, y=_bm_norm_g[_hit_up], mode='markers',
+            marker=dict(symbol='triangle-down', size=6, color='#f59e0b',
+                        line=dict(width=0.5, color='#d97706')),
+            showlegend=False,
+            hovertemplate='%{x}개월<br>상한 도달 → 인출 축소<extra></extra>',
+        ))
+    if len(_hit_lo) > 0:
+        fig_band.add_trace(go.Scatter(
+            x=_hit_lo, y=_bm_norm_g[_hit_lo], mode='markers',
+            marker=dict(symbol='triangle-up', size=6, color='#3b82f6',
+                        line=dict(width=0.5, color='#2563eb')),
+            showlegend=False,
+            hovertemplate='%{x}개월<br>하한 도달 → 인출 확대<extra></extra>',
+        ))
+
+    # 밴드 라벨 (우측)
+    fig_band.add_annotation(
+        x=_n + 3, y=_bm_band_hi,
+        text=f'상한 {_bm_band_hi:.2f}', showarrow=False, xanchor='left',
+        font=dict(size=9, color='#f59e0b'))
+    fig_band.add_annotation(
+        x=_n + 3, y=_bm_band_lo,
+        text=f'하한 {_bm_band_lo:.2f}', showarrow=False, xanchor='left',
+        font=dict(size=9, color='#3b82f6'))
+
+    # Fixed 밴드 이탈 시점
+    _bm_exit_idx = np.where(_bm_norm_f > _bm_band_hi)[0]
+    _bm_exit_t = int(_bm_exit_idx[0]) if len(_bm_exit_idx) > 0 else 0
+    if _bm_exit_t > 0:
+        fig_band.add_annotation(
+            x=_bm_exit_t, y=_bm_band_hi,
+            text=f'<b>고정: 밴드 이탈 (t={_bm_exit_t})</b>',
+            showarrow=True, arrowhead=2, arrowcolor='#dc2626',
+            ax=40, ay=25,
+            font=dict(size=10, color='#dc2626'),
+            bgcolor='white', bordercolor='#fecaca', borderwidth=1, borderpad=2)
+
+    # NAV 차트의 ruin 시점 — Fixed 라인이 차트 아래로 꺾이는 지점에 라벨
+    if _main_ruin_t > 0:
+        fig_band.add_annotation(
+            x=_main_ruin_t, y=0.80,
+            text=f'<b>NAV=0, 연금 소진 (t={_main_ruin_t})</b>',
+            showarrow=False,
+            font=dict(size=9, color='#7f1d1d'),
+            bgcolor='#fef2f2', bordercolor='#fca5a5', borderwidth=1, borderpad=2,
+            yanchor='bottom')
+
+    _bm_y_max = max(_bm_norm_f.max(), _bm_band_hi) + 0.08
+    _bm_y_min = 0.78
+
+    fig_band.update_layout(
+        height=350,
+        margin=dict(t=10, b=10, l=50, r=70),
+        plot_bgcolor='#f8fafc', paper_bgcolor='white',
+        legend=dict(
+            orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+            font=dict(size=11), bgcolor='rgba(248,250,252,0.9)',
+            bordercolor='#e2e8f0', borderwidth=1,
+        ),
+        yaxis=dict(
+            title_text='W/NAV 비율 (목표=1.0)',
+            title_font=dict(size=11, color='#64748b'),
+            range=[_bm_y_min, _bm_y_max],
+            showgrid=False, zeroline=False, linecolor='#e2e8f0',
+            tickfont=dict(size=10, color='#94a3b8'),
+            tickformat='.2f',
+        ),
+        xaxis=dict(
+            showticklabels=False, showgrid=False, linecolor='#e2e8f0',
+        ),
+    )
+    st.plotly_chart(fig_band, width='stretch')
+
+    st.caption(
+        f"각 전략의 인출/NAV 비율 (1.0 = 목표). "
+        f"Guardrail은 밴드 [{_bm_band_lo:.2f}, {_bm_band_hi:.2f}] 안에서만 인출. "
+        f"고정 인출은 하락기에 비율 상승 (NAV↓ → 동일 인출 → 비율↑), "
+        f"회복기에 비율 하락 (NAV↑ → 비율↓)."
+    )
+
+    # --- 3행 차트: NAV + 인출액 + 누적인출금 ---
+    fig_persuade = make_subplots(
+        rows=3, cols=1, row_heights=[0.55, 0.20, 0.25],
+        vertical_spacing=0.05, shared_xaxes=True,
+    )
+
+    # 하락기 / 회복기 배경 음영 — 4국면
     fig_persuade.add_vrect(x0=0, x1=60,                          # 안정기: 연한 회색
                            fillcolor='rgba(226,232,240,0.15)',
                            line_width=0, row='all', col=1)
@@ -498,9 +1047,36 @@ def render_tab1_mechanism(beta, path_method, init_wr):
         font=dict(size=10, color='#475569'),
         row=2, col=1)
 
+    # --- Row 3: 누적인출금 ---
+    fig_persuade.add_trace(go.Scatter(
+        x=_time, y=_cum_f, mode='lines', name='고정 누적인출',
+        line=dict(color='#dc2626', width=2, dash='dash'),
+        hovertemplate='%{x}개월<br>고정 누적인출: %{y:.1f}<extra></extra>',
+        showlegend=False,
+    ), row=3, col=1)
+    fig_persuade.add_trace(go.Scatter(
+        x=_time, y=_cum_g, mode='lines', name='Guardrail 누적인출',
+        line=dict(color='#16a34a', width=2),
+        hovertemplate='%{x}개월<br>Guardrail 누적인출: %{y:.1f}<extra></extra>',
+        showlegend=False,
+    ), row=3, col=1)
+    # 종료 라벨
+    fig_persuade.add_annotation(
+        x=_n, y=_cum_f[-1],
+        text=f'<b>고정: {_cum_f[-1]:.1f}</b>',
+        showarrow=True, arrowhead=2, arrowcolor='#dc2626', ax=-40, ay=15,
+        font=dict(size=10, color='#dc2626'),
+        row=3, col=1)
+    fig_persuade.add_annotation(
+        x=_n, y=_cum_g[-1],
+        text=f'<b>Guard: {_cum_g[-1]:.1f}</b>',
+        showarrow=True, arrowhead=2, arrowcolor='#16a34a', ax=-40, ay=-15,
+        font=dict(size=10, color='#16a34a'),
+        row=3, col=1)
+
     # --- 레이아웃 ---
     fig_persuade.update_layout(
-        height=520,
+        height=680,
         margin=dict(t=10, b=30, l=50, r=80),
         plot_bgcolor='#f8fafc', paper_bgcolor='white',
         legend=dict(
@@ -509,7 +1085,7 @@ def render_tab1_mechanism(beta, path_method, init_wr):
             bordercolor='#e2e8f0', borderwidth=1,
         ),
     )
-    # 상단 축
+    # Row 1: NAV
     fig_persuade.update_yaxes(
         title_text='잔액 (NAV)', title_font=dict(size=12, color='#64748b'),
         showgrid=False, zeroline=False, linecolor='#e2e8f0',
@@ -518,119 +1094,102 @@ def render_tab1_mechanism(beta, path_method, init_wr):
     fig_persuade.update_xaxes(
         showticklabels=False, showgrid=False, linecolor='#e2e8f0',
         row=1, col=1)
-    # 하단 축
+    # Row 2: 인출액
     fig_persuade.update_yaxes(
         title_text='인출액 (월)', title_font=dict(size=12, color='#64748b'),
         showgrid=False, zeroline=False, linecolor='#e2e8f0',
         tickfont=dict(size=10, color='#94a3b8'),
         row=2, col=1)
     fig_persuade.update_xaxes(
+        showticklabels=False, showgrid=False, linecolor='#e2e8f0',
+        row=2, col=1)
+    # Row 3: 누적인출금
+    fig_persuade.update_yaxes(
+        title_text='누적인출금', title_font=dict(size=12, color='#64748b'),
+        showgrid=False, zeroline=False, linecolor='#e2e8f0',
+        tickfont=dict(size=10, color='#94a3b8'),
+        row=3, col=1)
+    fig_persuade.update_xaxes(
         title_text='경과 월수', title_font=dict(size=12, color='#64748b'),
         showgrid=False, linecolor='#e2e8f0',
         tickfont=dict(size=10, color='#94a3b8'),
-        row=2, col=1)
+        row=3, col=1)
 
     st.plotly_chart(fig_persuade, width='stretch')
 
-    st.caption(
-        f"시뮬레이션: 연 {_target_ratio*12*100:.0f}% 인출, 밴드 ±5%, 240개월. "
-        f"같은 시장 수익률에서 고정 인출은 자본이 고갈되지만, "
-        f"Guardrail은 하락기 인출 축소 → 회복기 자본 복원으로 목표를 달성합니다."
-    )
+    # --- 메트릭 카드 (컨셉 차트 시뮬레이션 결과) ---
+    _cum_fixed = _cum_f[-1]
+    _cum_guard = _cum_g[-1]
+    _cum_diff = _cum_guard - _cum_fixed
+    _cum_diff_pct = ((_cum_guard / _cum_fixed) - 1) * 100 if _cum_fixed != 0 else 0
 
-    # --- 메트릭 카드 (시뮬레이션 결과 요약, 사이드바 연동) ---
-    # 누적 인출 합계 (NAV=0 이후 인출 중단 반영)
-    _cum_fixed = _wf.sum()   # 고정: 실제 인출 추적
-    _cum_guard = _wg.sum()   # Guardrail: 변동액 합산
-    _cum_diff = _cum_guard - _cum_fixed  # 양수 = Guardrail이 더 많이 인출
+    _f_met = '달성' if _end_f >= _target_line else '미달'
+    _g_met = '달성' if _end_g >= _target_line else '미달'
 
-    _f_met = _end_f >= _target_line
-    _g_met = _end_g >= _target_line
-
-    # 기말 NAV + 누적인출 합계
     _total_fixed = _end_f + _cum_fixed
     _total_guard = _end_g + _cum_guard
     _total_diff = _total_guard - _total_fixed
+    _total_pct = ((_total_guard / _total_fixed) - 1) * 100 if _total_fixed != 0 else 0
 
-    # --- 실데이터 기반 성공률 (대표 포트폴리오 Port_6.0%) ---
-    _rep_port = sorted(PORTFOLIOS.keys())[min(2, len(PORTFOLIOS) - 1)]
-    _fix_ok, _fix_fail, _fix_wd = simulate_paths_for_strategy(
-        _rep_port, init_wr, band=99.0, beta=beta, path_method=path_method)
-    _grd_ok, _grd_fail, _grd_wd = simulate_paths_for_strategy(
-        _rep_port, init_wr, band=FIXED_BAND, beta=beta, path_method=path_method)
-    _n_fix = len(_fix_ok) + len(_fix_fail)
-    _n_grd = len(_grd_ok) + len(_grd_fail)
-    _fix_sr = len(_fix_ok) / _n_fix * 100 if _n_fix > 0 else 0
-    _grd_sr = len(_grd_ok) / _n_grd * 100 if _n_grd > 0 else 0
-    _delta_sr = _grd_sr - _fix_sr
-
-    # 실데이터 중앙값 (누적인출, 기말잔액)
-    _all_fix_paths = _fix_ok + _fix_fail
-    _all_grd_paths = _grd_ok + _grd_fail
-    _fix_cum_vals = [sum(ws) for ws in _fix_wd]
-    _grd_cum_vals = [sum(ws) for ws in _grd_wd]
-    _fix_cum_med = np.median(_fix_cum_vals) if _fix_cum_vals else 0
-    _grd_cum_med = np.median(_grd_cum_vals) if _grd_cum_vals else 0
-    _cum_diff_abs = _grd_cum_med - _fix_cum_med
-    _cum_diff_pct = ((_grd_cum_med / _fix_cum_med) - 1) * 100 if _fix_cum_med != 0 else 0
-
-    _fix_term_vals = [p[-1] for p in _all_fix_paths] if _all_fix_paths else []
-    _grd_term_vals = [p[-1] for p in _all_grd_paths] if _all_grd_paths else []
-    _fix_term_med = np.median(_fix_term_vals) if _fix_term_vals else 0
-    _grd_term_med = np.median(_grd_term_vals) if _grd_term_vals else 0
-    _term_diff = _grd_term_med - _fix_term_med
-    _term_pct = ((_grd_term_med / _fix_term_med) - 1) * 100 if _fix_term_med != 0 else 0
-
-    _fix_total_med = _fix_term_med + _fix_cum_med
-    _grd_total_med = _grd_term_med + _grd_cum_med
-    _total_diff_r = _grd_total_med - _fix_total_med
-    _total_pct_r = ((_grd_total_med / _fix_total_med) - 1) * 100 if _fix_total_med != 0 else 0
+    _nav_diff = _end_g - _end_f
+    _nav_diff_pct = ((_end_g / _end_f) - 1) * 100 if _end_f != 0 else 0
 
     mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
         st.metric(
-            f"성공률 개선 ({_rep_port})",
-            f"{_delta_sr:+.1f}%p",
-            delta=f"{_delta_sr:+.1f}%p (Fixed {_fix_sr:.1f}% → Guard {_grd_sr:.1f}%)",
-            delta_color="normal" if _delta_sr != 0 else "off",
+            "기말 NAV",
+            f"Guardrail {_end_g:.1f}",
+            delta=f"{_nav_diff:+.1f} ({_nav_diff_pct:+.1f}%) vs Fixed {_end_f:.1f}",
+            delta_color="normal" if _nav_diff > 0 else ("inverse" if _nav_diff < 0 else "off"),
         )
     with mc2:
+        # 누적인출금: ▼=빨강, ▲=초록
         st.metric(
-            "누적인출금 (중앙값)",
-            f"{_grd_cum_med:.1f}",
-            delta=f"{_cum_diff_abs:+.1f} ({_cum_diff_pct:+.1f}%) vs Fixed {_fix_cum_med:.1f}",
-            delta_color="normal" if _cum_diff_abs != 0 else "off",
+            "누적인출금",
+            f"Guardrail {_cum_guard:.1f}",
+            delta=f"{_cum_diff:+.1f} ({_cum_diff_pct:+.1f}%) vs Fixed {_cum_fixed:.1f}",
+            delta_color="normal",
         )
     with mc3:
         st.metric(
-            "기말잔액 (중앙값)",
-            f"{_grd_term_med:.1f}",
-            delta=f"{_term_diff:+.1f} ({_term_pct:+.1f}%) vs Fixed {_fix_term_med:.1f}",
-            delta_color="normal" if _term_diff != 0 else "off",
+            "총 가치 (NAV+누적인출)",
+            f"Guardrail {_total_guard:.1f}",
+            delta=f"{_total_diff:+.1f} ({_total_pct:+.1f}%) vs Fixed {_total_fixed:.1f}",
+            delta_color="normal" if _total_diff > 0 else ("inverse" if _total_diff < 0 else "off"),
         )
     with mc4:
+        # 목표 달성: Guard=달성 & Fixed=미달 → 초록(▲), 반대 → 빨강(▼), 동일 → 회색(=)
+        if _g_met == _f_met:
+            _goal_delta = f"= Fixed: {_f_met}"
+            _goal_color = "off"
+        elif _g_met == '달성' and _f_met == '미달':
+            _goal_delta = f"▲ Fixed: {_f_met}"
+            _goal_color = "normal"
+        else:
+            _goal_delta = f"▼ Fixed: {_f_met}"
+            _goal_color = "inverse"
         st.metric(
-            "기말잔액 + 누적인출 합계",
-            f"{_grd_total_med:.1f}",
-            delta=f"{_total_diff_r:+.1f} ({_total_pct_r:+.1f}%) vs Fixed {_fix_total_med:.1f}",
-            delta_color="normal" if _total_diff_r != 0 else "off",
+            f"목표 달성 (초기의 {beta*100:.0f}%)",
+            f"Guardrail: {_g_met}",
+            delta=_goal_delta,
+            delta_color=_goal_color,
         )
 
 
 
 # ============================================================================
-# Tab 데이터 검증: 실제 과거 데이터 기반 경로 시각화
+# Tab 시뮬레이션: 실제 과거 데이터 기반 경로 시각화
 # ============================================================================
 
 def render_tab_data_validation(beta, path_method, init_wr):
-    """데이터 검증 탭: 실제 과거 데이터에서 Fixed vs Guardrail 경로 비교"""
+    """시뮬레이션 탭: 실제 과거 데이터에서 Fixed vs Guardrail 경로 비교"""
 
     st.markdown(
         '<p style="font-size:1.2em; font-weight:700; color:#1e293b; '
-        'margin: 8px 0 4px 0;">실제 과거 데이터 검증</p>',
+        'margin: 8px 0 4px 0;">시뮬레이션</p>',
         unsafe_allow_html=True,
     )
-    st.caption("합성 시나리오가 실제 과거 데이터에서도 성립하는지 확인합니다.")
+    st.caption("실제 과거 데이터 기반 Fixed vs Guardrail 경로를 비교합니다.")
 
     st.markdown("")
 
@@ -878,7 +1437,7 @@ def render_tab_data_validation(beta, path_method, init_wr):
     )
     st.caption(
         "주의: Rolling window 경로는 시작점이 1개월씩 이동하므로 상호 상관이 높습니다. "
-        "Bootstrap 결과와의 비교는 실제 포트폴리오 검증 탭에서 확인할 수 있습니다."
+        "Bootstrap 결과와의 비교는 데이터 검증 탭에서 확인할 수 있습니다."
     )
 
 
@@ -1205,14 +1764,14 @@ def render_tab2_gbm(df_gbm, beta):
 
 
 # ============================================================================
-# Tab 3: 실제 포트폴리오 검증 (Historical Fixed vs Guardrail)
+# Tab 데이터 검증: Historical + GBM (Fixed vs Guardrail)
 # ============================================================================
 
 def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
-    """탭 3: 실제 포트폴리오 데이터에서 Fixed vs Guardrail 검증.
+    """데이터 검증 탭: Historical + GBM 데이터 기반 Fixed vs Guardrail 검증.
     좌측: Historical, 우측: GBM 이론. Beta/Path Method는 사이드바, Band는 ±5% 고정."""
 
-    st.markdown("### 실제 포트폴리오 검증")
+    st.markdown("### 데이터 검증")
     st.caption(
         f"좌측: Historical 데이터 기반 검증 | 우측: GBM 이론 분석. "
         f"**기말잔액 비율: {beta*100:.0f}%** | **데이터: {PATH_METHOD_LABELS.get(path_method, path_method)}** "
@@ -1396,26 +1955,31 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
             if len(gbm_fixed) == 0 or len(gbm_guard) == 0:
                 st.warning(f"\u03bc={gbm_mu*100:.0f}% 데이터가 부족합니다.")
             else:
-                # sigma 4%~15% 필터
-                sigmas = sorted([s for s in gbm_fixed['sigma'].unique() if 0.04 <= s <= 0.15])
+                # 포트폴리오별 실제 변동성(target_risk) → 가장 가까운 GBM sigma 매핑
+                all_gbm_sigmas = sorted(gbm_fixed['sigma'].unique())
                 init_wrs_gbm = sorted(gbm_fixed['init_wr'].unique())
 
-                if len(sigmas) == 0:
-                    st.info("σ 4~15% 범위의 데이터가 없습니다.")
-                else:
-                    gbm_fixed = gbm_fixed[gbm_fixed['sigma'].isin(sigmas)]
-                    gbm_guard = gbm_guard[gbm_guard['sigma'].isin(sigmas)]
+                port_sigma_map = {}  # {포트폴리오명: 매핑된 GBM sigma}
+                for pname in sorted(PORTFOLIOS.keys()):
+                    real_sigma = PORTFOLIOS[pname]['target_risk'] / 100
+                    closest = min(all_gbm_sigmas, key=lambda s: abs(s - real_sigma))
+                    port_sigma_map[pname] = closest
 
-                # --- GBM 1. 성공률 차이 히트맵 (y=sigma, x=init_wr) ---
+                port_names_ordered = sorted(port_sigma_map.keys())
+                port_sigmas_ordered = [port_sigma_map[p] for p in port_names_ordered]
+                port_ylabels = [f"{p} (\u03c3={port_sigma_map[p]*100:.0f}%)" for p in port_names_ordered]
+
+                # --- GBM 1. 성공률 차이 히트맵 (y=포트폴리오, x=init_wr) ---
                 st.markdown("**1. 성공률 차이 히트맵 (Guardrail \u2212 Fixed)**")
 
-                gbm_diff_matrix = np.full((len(sigmas), len(init_wrs_gbm)), np.nan)
-                for j_s, sig in enumerate(sigmas):
+                gbm_diff_matrix = np.full((len(port_names_ordered), len(init_wrs_gbm)), np.nan)
+                for j_p, pname in enumerate(port_names_ordered):
+                    sig = port_sigma_map[pname]
                     for i_w, wr in enumerate(init_wrs_gbm):
                         f_r = gbm_fixed[(gbm_fixed['sigma'] == sig) & (gbm_fixed['init_wr'] == wr)]
                         g_r = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['init_wr'] == wr)]
                         if len(f_r) > 0 and len(g_r) > 0:
-                            gbm_diff_matrix[j_s, i_w] = (
+                            gbm_diff_matrix[j_p, i_w] = (
                                 g_r.iloc[0]['x_success_rate'] - f_r.iloc[0]['x_success_rate']) * 100
 
                 valid_vals = gbm_diff_matrix[np.isfinite(gbm_diff_matrix)]
@@ -1424,24 +1988,25 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                     fig_gbm_sr = go.Figure(data=go.Heatmap(
                         z=gbm_diff_matrix,
                         x=[f"{w*100:.1f}%" for w in init_wrs_gbm],
-                        y=[f"\u03c3={s*100:.0f}%" for s in sigmas],
+                        y=port_ylabels,
                         colorscale='RdYlGn', zmid=0, zmin=-zmax_g, zmax=zmax_g,
                         text=np.round(gbm_diff_matrix, 1),
                         texttemplate='%{text:+.1f}',
                         textfont={"size": 8},
                         colorbar=dict(title="SR차이(%p)")
                     ))
-                    fig_gbm_sr.update_layout(xaxis_title="초기인출률", yaxis_title="변동성 \u03c3", height=350,
+                    fig_gbm_sr.update_layout(xaxis_title="초기인출률", yaxis_title="포트폴리오", height=350,
                                              margin=dict(t=10, b=30, l=50, r=20))
                     st.plotly_chart(fig_gbm_sr, use_container_width=True)
                 else:
                     st.info("히트맵 데이터가 부족합니다.")
 
-                # --- GBM 2. 누적인출금 차이 히트맵 (y=sigma, x=init_wr) ---
+                # --- GBM 2. 누적인출금 차이 히트맵 (y=포트폴리오, x=init_wr) ---
                 st.markdown("**2. 누적인출금 차이 히트맵 (Guardrail \u2212 Fixed, %)**")
 
-                gbm_cum_matrix = np.full((len(sigmas), len(init_wrs_gbm)), np.nan)
-                for j_s, sig in enumerate(sigmas):
+                gbm_cum_matrix = np.full((len(port_names_ordered), len(init_wrs_gbm)), np.nan)
+                for j_p, pname in enumerate(port_names_ordered):
+                    sig = port_sigma_map[pname]
                     for i_w, wr in enumerate(init_wrs_gbm):
                         f_r = gbm_fixed[(gbm_fixed['sigma'] == sig) & (gbm_fixed['init_wr'] == wr)]
                         g_r = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['init_wr'] == wr)]
@@ -1449,7 +2014,7 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                             f_cum = f_r.iloc[0]['y_cum_withdraw_median']
                             g_cum = g_r.iloc[0]['y_cum_withdraw_median']
                             if f_cum > 0:
-                                gbm_cum_matrix[j_s, i_w] = ((g_cum / f_cum) - 1) * 100
+                                gbm_cum_matrix[j_p, i_w] = ((g_cum / f_cum) - 1) * 100
 
                 valid_cum = gbm_cum_matrix[np.isfinite(gbm_cum_matrix)]
                 if len(valid_cum) > 0:
@@ -1457,29 +2022,30 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                     fig_gbm_cum = go.Figure(data=go.Heatmap(
                         z=gbm_cum_matrix,
                         x=[f"{w*100:.1f}%" for w in init_wrs_gbm],
-                        y=[f"\u03c3={s*100:.0f}%" for s in sigmas],
+                        y=port_ylabels,
                         colorscale='RdBu', zmid=0, zmin=-zmax_gc, zmax=zmax_gc,
                         text=np.round(gbm_cum_matrix, 1),
                         texttemplate='%{text:+.1f}%',
                         textfont={"size": 8},
                         colorbar=dict(title="인출차이(%)")
                     ))
-                    fig_gbm_cum.update_layout(xaxis_title="초기인출률", yaxis_title="변동성 \u03c3", height=350,
+                    fig_gbm_cum.update_layout(xaxis_title="초기인출률", yaxis_title="포트폴리오", height=350,
                                               margin=dict(t=10, b=30, l=50, r=20))
                     st.plotly_chart(fig_gbm_cum, use_container_width=True)
                 else:
                     st.info("누적인출금 비교 데이터가 부족합니다.")
 
-                # --- GBM 3. 변동성별 성공률 곡선 (단일 sigma 선택) ---
-                st.markdown("**3. 변동성별 성공률 곡선**")
+                # --- GBM 3. 포트폴리오별 성공률 곡선 ---
+                st.markdown("**3. 포트폴리오별 성공률 곡선**")
 
-                sel_sigma = st.selectbox(
-                    "변동성 선택",
-                    options=sigmas,
-                    index=min(3, len(sigmas) - 1),
-                    format_func=lambda x: f"\u03c3={x*100:.0f}%",
-                    key='tab3_gbm_sigma'
+                sel_port = st.selectbox(
+                    "포트폴리오 선택",
+                    options=port_names_ordered,
+                    index=min(2, len(port_names_ordered) - 1),
+                    format_func=lambda p: f"{p} (σ={port_sigma_map[p]*100:.0f}%)",
+                    key='tab3_gbm_port'
                 )
+                sel_sigma = port_sigma_map[sel_port]
 
                 fig_gbm_curve = go.Figure()
                 f_data = gbm_fixed[gbm_fixed['sigma'] == sel_sigma].sort_values('init_wr')
@@ -1490,14 +2056,6 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                         line=dict(color='#999', width=2, dash='dash'),
                         marker=dict(size=4, symbol='diamond'),
                     ))
-                    if 'cf_success_rate' in f_data.columns:
-                        cf_data = f_data.dropna(subset=['cf_success_rate'])
-                        if len(cf_data) > 0:
-                            fig_gbm_curve.add_trace(go.Scatter(
-                                x=cf_data['init_wr'] * 100, y=cf_data['cf_success_rate'],
-                                mode='lines', name='CF (Closed-form)',
-                                line=dict(color='#999', width=1, dash='dot'),
-                            ))
                 g_data = gbm_guard[gbm_guard['sigma'] == sel_sigma].sort_values('init_wr')
                 if len(g_data) > 0:
                     fig_gbm_curve.add_trace(go.Scatter(
@@ -1514,13 +2072,36 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                 )
                 st.plotly_chart(fig_gbm_curve, use_container_width=True)
 
-    # ========================================
-    # 4. Guardrail 효과 분석 — 언제 효과적이고 언제 아닌가 (full-width)
-    # ========================================
-    st.markdown("---")
-    st.subheader("4. Guardrail 효과 분석: 언제 유리하고 언제 불리한가")
+    pass  # 효과 분석 + 분석결과는 render_tab_findings()로 이동
+
+
+# ============================================================================
+# Tab 분석결과: Guardrail 효과 분석 + 분석결과
+# ============================================================================
+
+def render_tab_findings(df_all, beta, path_method, df_gbm=None):
+    """분석결과 탭: Guardrail 효과 분석 (언제 유리/불리) + 종합 분석결과."""
+
+    st.markdown("### 분석결과")
+    st.caption(
+        f"**기말잔액 비율: {beta*100:.0f}%** | **데이터: {PATH_METHOD_LABELS.get(path_method, path_method)}** "
+        f"| **Band: \u00b1{FIXED_BAND*100:.0f}% 고정**"
+    )
 
     hist_band = FIXED_BAND
+
+    df = df_all[(df_all['beta'] == beta) & (df_all['path_method'] == path_method)].copy()
+    if len(df) == 0:
+        st.warning("선택된 기말잔액 비율/데이터 기반 조합에 맞는 데이터가 없습니다.")
+        return
+
+    portfolios = sorted(df['portfolio'].unique())
+    wrs = sorted(df['init_wr'].unique())
+
+    # ========================================
+    # 1. Guardrail 효과 분석 — 언제 효과적이고 언제 아닌가
+    # ========================================
+    st.subheader("1. Guardrail 효과 분석: 언제 유리하고 언제 불리한가")
 
     # 전 포트폴리오 × 전 인출률에 대해 Fixed vs Guardrail 비교
     _eff_rows = []
@@ -1574,63 +2155,38 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
         ]
         st.dataframe(_worst, width='stretch', hide_index=True)
 
-        # 분석결과
-        n_negative_sr = len(_eff_df[_eff_df['_sr_diff'] < 0])
-        n_zero_sr = len(_eff_df[_eff_df['_sr_diff'].abs() < 0.5])
-        n_total = len(_eff_df)
-        n_negative_total = len(_eff_df[_eff_df['_total_diff'] < 0])
-
+        # ========================================
+        # 2. 분석결과
+        # ========================================
         st.markdown("---")
-        st.subheader("분석결과")
-
-        n_positive_sr = n_total - n_negative_sr - n_zero_sr
-        st.markdown(_finding_box(
-            f"<b>1. 전체 현황</b><br>"
-            f"6개 포트폴리오(Port_4.0%~9.0%) × 다양한 초기인출률(3~15%)로 구성된 "
-            f"<b>총 {n_total}개 조합</b>에 대해 Fixed(고정인출)와 Guardrail(±5%)의 목표달성률을 비교했습니다.<br><br>"
-            f"• <b>Guardrail 목표달성률이 더 높은 조합: {n_positive_sr}건</b> — "
-            f"인출 압박이 큰 영역에서 Guardrail이 파산을 방지하여 목표달성률을 유의미하게 끌어올립니다.<br>"
-            f"• <b>차이가 거의 없는 조합 (&lt;0.5%p): {n_zero_sr}건</b> — "
-            f"저인출률 + 고수익 포트폴리오처럼 이미 Fixed 목표달성률이 100%에 가까워 Guardrail이 개입할 여지가 없는 구간입니다.<br>"
-            f"• <b>Guardrail 목표달성률이 더 낮은 조합: {n_negative_sr}건</b> — "
-            f"Guardrail이 Fixed보다 불리한 경우는 단 한 건도 없습니다.<br><br>"
-            f"한편 총 가치(누적인출금 + 기말NAV) 기준으로는 <b>{n_negative_total}건에서 Guardrail이 소폭 불리</b>합니다. "
-            f"이는 Guardrail이 하락기에 인출을 줄여 파산을 막는 대신, 누적인출금이 감소하는 trade-off에서 비롯됩니다."
-        ), unsafe_allow_html=True)
+        st.subheader("2. 종합 분석결과")
 
         st.markdown(_finding_box(
-            f"<b>2. 총 가치 차이가 작은 이유</b><br>"
-            f"Guardrail은 하락기에 인출을 줄여 NAV를 보전하는 대신, "
-            f"누적인출금이 Fixed보다 감소합니다. 즉, '기말NAV 증가 vs 누적인출금 감소'의 trade-off가 발생하여 "
-            f"총 가치(기말NAV + 누적인출금)의 차이는 상대적으로 작게 나타납니다. "
-            f"Guardrail의 핵심 가치는 총 가치 극대화가 아니라 <b>파산 방지 및 목표달성률 제고</b>에 있습니다."
-        ), unsafe_allow_html=True)
-
-        st.markdown(_finding_box(
-            f"<b>3. Guardrail이 유리한 조건</b><br>"
-            f"• <b>중위험 포트폴리오(4~6%) + 중~고인출률(8~12%)</b>: "
+            f"<b>1. Guardrail이 유리한 조건</b><br>"
+            f"\u2022 <b>중위험 포트폴리오(4~6%) + 중~고인출률(8~12%)</b>: "
             f"Fixed는 하락장에서 자본이 빠르게 소진되어 파산하지만, Guardrail은 인출 축소로 버텨 회복 기회를 확보합니다.<br>"
-            f"• <b>고인출률(12%+) 전반</b>: 인출 압박이 강할수록 Guardrail의 자본 보전 효과가 극대화됩니다.<br>"
-            f"• <b>변동성이 큰 시장 환경</b>: GBM 이론 분석에서도 σ↑일수록 Guardrail 우위가 커지는 패턴이 확인됩니다."
+            f"\u2022 <b>고인출률(12%+) 전반</b>: 인출 압박이 강할수록 Guardrail의 자본 보전 효과가 극대화됩니다.<br>"
+            f"\u2022 <b>변동성이 큰 시장 환경</b>: GBM 이론 분석에서도 \u03c3\u2191일수록 Guardrail 우위가 커지는 패턴이 확인됩니다."
         ), unsafe_allow_html=True)
 
         st.markdown(_finding_box(
-            f"<b>4. Guardrail이 불리한 조건</b><br>"
-            f"• <b>저인출률(3~4%) + 고수익 포트폴리오(8~9%)</b>: "
+            f"<b>2. Guardrail이 불리한 조건</b><br>"
+            f"\u2022 <b>저인출률(3~4%) + 고수익 포트폴리오(8~9%)</b>: "
             f"이미 Fixed 목표달성률이 100%에 근접하여 Guardrail 조절이 불필요합니다. "
             f"오히려 인출 축소가 누적인출금을 줄여 총 가치가 다소 감소합니다.<br>"
-            f"• <b>극저변동성 환경(σ &lt; 4%)</b>: 자산 변동 자체가 작아 인출 조절의 실익이 미미합니다."
+            f"\u2022 <b>극저변동성 환경(\u03c3 &lt; 4%)</b>: 자산 변동 자체가 작아 인출 조절의 실익이 미미합니다."
         ), unsafe_allow_html=True)
 
         st.markdown(_finding_box(
-            f"<b>5. 실무적 시사점</b><br>"
-            f"• 퇴직연금 OCIO 펀드의 실제 인출률 범위(4~8%)에서 Guardrail은 "
+            f"<b>3. 실무적 시사점</b><br>"
+            f"\u2022 퇴직연금 OCIO 펀드의 실제 인출률 범위(4~8%)에서 Guardrail은 "
             f"목표달성률을 유의미하게 개선하면서 인출 안정성을 확보합니다.<br>"
-            f"• 총 가치 차이가 크지 않다는 것은 '같은 경제적 가치를 유지하면서 파산 위험만 줄인다'는 의미이므로, "
+            f"\u2022 총 가치 차이가 크지 않다는 것은 '같은 경제적 가치를 유지하면서 파산 위험만 줄인다'는 의미이므로, "
             f"Guardrail 도입의 비용(기회비용)이 낮다는 긍정적 신호입니다.<br>"
-            f"• Band ±5%의 소폭 조정으로도 충분한 효과를 얻을 수 있어, "
+            f"\u2022 Band \u00b15%의 소폭 조정으로도 충분한 효과를 얻을 수 있어, "
             f"수익자 입장에서 인출액 변동의 체감 불편이 최소화됩니다."
         ), unsafe_allow_html=True)
+
     else:
         st.info("비교 데이터가 부족합니다.")
 
@@ -1743,7 +2299,7 @@ def main():
 
     # 초기 인출률 선택
     init_wr_pct = st.sidebar.slider(
-        "초기 인출률 (%)", min_value=3, max_value=15, value=10, step=1,
+        "초기 인출률 (%)", min_value=3, max_value=15, value=5, step=1,
         key='global_init_wr',
         help="연간 인출률. 예: 10% = 초기자산 100 기준 연 10 인출"
     )
@@ -1799,16 +2355,20 @@ def main():
         """)
 
     # ========================================
-    # 탭 생성 (4개, 사이드바 연동)
+    # 탭 생성 (6개, 사이드바 연동)
     # ========================================
 
-    tab1, tab_dv, tab2, tab3, tab4 = st.tabs([
+    tab_assume, tab1, tab_dv, tab3, tab4, tab_findings = st.tabs([
+        "가정",
         "Guardrail 효과",
+        "시뮬레이션",
         "데이터 검증",
-        "이론 분석 (GBM)",
-        "실제 포트폴리오 검증",
         "Band 최적화",
+        "분석결과",
     ])
+
+    with tab_assume:
+        render_tab_assumptions(global_init_wr)
 
     with tab1:
         render_tab1_mechanism(beta, path_method, global_init_wr)
@@ -1816,14 +2376,14 @@ def main():
     with tab_dv:
         render_tab_data_validation(beta, path_method, global_init_wr)
 
-    with tab2:
-        render_tab2_gbm(df_gbm, beta)
-
     with tab3:
         render_tab3_historical(df_all, beta, path_method, df_gbm=df_gbm)
 
     with tab4:
         render_tab4_optimization(df_all, beta, path_method, df_gbm=df_gbm)
+
+    with tab_findings:
+        render_tab_findings(df_all, beta, path_method, df_gbm=df_gbm)
 
 
 if __name__ == "__main__":
