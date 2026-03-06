@@ -66,9 +66,15 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 1. 수익률 적용: `W_t = W_{t-1} * (1 + r_t)`
 2. 인출 시도액: `prev_withdraw` (이전 달 인출액 유지, 초기값 = `W0 * init_wr / 12`)
 3. 수익률 기반 보정 (옵션): lookback 기간 -> threshold 확인 -> +-adj%
+3.5. **변동성 밴드 조정** (vol_adj=True일 때):
+   - `σ_realized = std(최근 12개월 수익률, ddof=1) × √12` (연율화)
+   - `sigma_ratio = clip(σ_realized / σ_target, 0.5, 2.0)`
+   - `effective_band = base_band × sigma_ratio`
+   - 고변동성 → 밴드 확대 (인출 조절 강화), 저변동성 → 밴드 축소 (인출 안정 유지)
+   - `sigma_ratio = 1.0`이면 기존 guardrail과 동일 (backward compatible)
 4. Guardrail 밴드 (W/NAV 비율 기준):
    - `target_ratio = init_wr / 12` (목표 월비율)
-   - `upper_ratio = target_ratio * (1 + band)`, `lower_ratio = target_ratio * (1 - band)`
+   - `upper_ratio = target_ratio * (1 + effective_band)`, `lower_ratio = target_ratio * (1 - effective_band)`
    - `ratio = withdraw / W_t` → 비율이 밴드 벗어나면 `upper_ratio * W_t` 또는 `lower_ratio * W_t`로 조정
    - 밴드 내이면 이전 인출액 그대로 유지 (고정 base로 리셋하지 않음)
 5. 인출 실행: `W_t = W_t - withdraw_final`, `prev_withdraw = withdraw_final` (다음 달 기준 갱신)
@@ -76,7 +82,8 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 ### 그리드 서치 전략 유형
 
 - **fixed_baseline**: `band=99.0` (사실상 guardrail 없음), `adj_on=False`. 순수 고정 인출.
-- **dynamic**: 실제 guardrail 밴드 (0.05~0.20), 수익률 보정 옵션 포함.
+- **dynamic**: 실제 guardrail 밴드 (0.05~0.20), 고정 밴드 폭.
+- **vol_adjusted**: `vol_adj=True`. 실현 변동성으로 밴드 폭을 동적 조정. `sigma_target`은 Historical→전체 표본 σ, GBM→생성 파라미터 σ.
 
 ### 성공/실패 정의
 
@@ -90,13 +97,14 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 1. ~~**Tab 1 메커니즘 시각화 강화**~~ — v6.0에서 Fixed vs Guardrail 비교 인포그래픽으로 교체 완료
 2. ~~**Beta 위젯 위치 재배치**~~ — v5.3에서 사이드바 글로벌 컨트롤로 통합
-3. **Beta 값 확장** — grid_search.py에 beta=[0.1, 0.25, 0.5, 0.75, 1.0] 추가 후 pkl 재생성 필요 (현재 데이터는 0.1/0.5/1.0만 존재)
+3. ~~**Beta 값 확장**~~ — grid_search.py, gbm_grid_search.py 모두 beta=[0.1, 0.25, 0.5, 0.75, 1.0] 적용 + pkl 재생성 완료
 4. ~~**모든 시각화에 핵심 코멘트**~~ — v5에서 완료
 5. ~~**Band Trade-off 비교 그래프**~~ — v5.3에서 간결화 완료
 6. ~~**전략 상세 + 나의 전략 조합 탭 통합**~~ — v5에서 해소
-7. **NAV 경로 시뮬레이션 탭 복원** — 전략 상세(NAV Fan Chart) 별도 탭 또는 drill-down
+7. ~~**NAV 경로 시뮬레이션 탭 복원**~~ — 불필요로 삭제
 8. ~~**engine.py Guardrail 로직 통일**~~ — v6.0에서 W/NAV 비율 밴드 방식으로 통일 완료
 9. ~~**Tab 3 리팩토링**~~ — v7.0에서 2컬럼 레이아웃 + Section 4,5 삭제 + 분석결과 확장 완료
+10. ~~**Volatility-Adjusted Guardrail**~~ — v7.2에서 engine.py vol_adj 파라미터 + grid_search/gbm_grid_search vol_adjusted 전략 추가 + viewer.py 3종 비교 완료
 
 ## 코딩 컨벤션
 

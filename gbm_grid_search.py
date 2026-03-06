@@ -86,8 +86,11 @@ def run_gbm_grid_search():
     T_months = GBM_CONFIG['T_months']
     seed = GBM_CONFIG['seed']
 
+    # Vol-adjusted bands (fixed 제외, guardrail만)
+    vol_adj_bands = [b for b in band_configs if b != 99.0]
+
     total_mu_sigma = len(mu_range) * len(sigma_range)
-    total_sims = total_mu_sigma * len(init_wr_range) * len(band_configs)
+    total_sims = total_mu_sigma * len(init_wr_range) * (len(band_configs) + len(vol_adj_bands))
     total_results = total_sims * len(betas)
 
     print(f"\n그리드 설정:")
@@ -131,6 +134,7 @@ def run_gbm_grid_search():
                     result['band'] = band_f
                     result['beta'] = float(beta)
                     result['strategy_type'] = strategy_type
+                    result['vol_adj'] = False
                     # Fixed의 경우 Closed-form 확률도 계산
                     if strategy_type == 'fixed_baseline':
                         result['cf_success_rate'] = gbm_survival_probability(
@@ -138,6 +142,28 @@ def run_gbm_grid_search():
                             T=T_months / 12, beta=float(beta))
                     else:
                         result['cf_success_rate'] = None
+                    all_results.append(result)
+
+            # Vol-Adjusted Guardrail (sigma_target = sigma)
+            for band in vol_adj_bands:
+                band_f = float(band)
+
+                sim = simulate_withdrawal_on_paths_vectorized(
+                    paths, init_wr_f, band_f,
+                    vol_adj=True, sigma_target=sigma, vol_lookback=12,
+                )
+                eval_results = evaluate_gbm_strategy(sim, betas)
+
+                for i, beta in enumerate(betas):
+                    result = eval_results[i].copy()
+                    result['mu'] = mu
+                    result['sigma'] = sigma
+                    result['init_wr'] = init_wr_f
+                    result['band'] = band_f
+                    result['beta'] = float(beta)
+                    result['strategy_type'] = 'vol_adjusted'
+                    result['vol_adj'] = True
+                    result['cf_success_rate'] = None
                     all_results.append(result)
 
     elapsed = time.time() - start_time
@@ -197,11 +223,11 @@ def main():
     print(f"  init_wr 범위: {df['init_wr'].min():.3f} ~ {df['init_wr'].max():.3f}")
     print(f"  strategy_type 분포: {df['strategy_type'].value_counts().to_dict()}")
 
-    # 샘플: mu=6%, sigma=10%, beta=0.5 기준 Fixed vs Guardrail 비교
+    # 샘플: mu=6%, sigma=10%, beta=0.5 기준 Fixed vs Guardrail vs Vol-Adjusted 비교
     sample = df[(df['mu'] == 0.06) & (df['sigma'] == 0.10) & (df['beta'] == 0.5)]
     if len(sample) > 0:
         print(f"\n[샘플] mu=6%, sigma=10%, beta=50%:")
-        for st in ['fixed_baseline', 'dynamic']:
+        for st in ['fixed_baseline', 'dynamic', 'vol_adjusted']:
             sub = sample[sample['strategy_type'] == st]
             if len(sub) > 0:
                 print(f"  {st}: {len(sub)}개 조합")

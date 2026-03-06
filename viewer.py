@@ -114,6 +114,7 @@ def load_grid_results():
                 'n_paths': r['n_paths'],
                 'terminal_nav_median': r.get('terminal_nav_median', None),
                 'terminal_nav_mean': r.get('terminal_nav_mean', None),
+                'vol_adj': r.get('vol_adj', False),
                 'is_frontier': r.get('is_frontier', False),
                 'is_optimal': r.get('is_optimal', False),
             }
@@ -1483,6 +1484,11 @@ def render_tab2_gbm(df_gbm, beta):
         (df_gbm['mu'] == gbm_mu) & (df_gbm['beta'] == gbm_beta) &
         (df_gbm['strategy_type'] == 'dynamic') & (df_gbm['band'] == gbm_band)
     ].copy()
+    gbm_vol = df_gbm[
+        (df_gbm['mu'] == gbm_mu) & (df_gbm['beta'] == gbm_beta) &
+        (df_gbm['strategy_type'] == 'vol_adjusted') & (df_gbm['band'] == gbm_band)
+    ].copy() if 'strategy_type' in df_gbm.columns and 'vol_adjusted' in df_gbm['strategy_type'].values else pd.DataFrame()
+    _has_vol = len(gbm_vol) > 0
 
     if len(gbm_fixed) == 0:
         st.warning(f"\u03bc={gbm_mu*100:.0f}%, 기말잔액 비율={gbm_beta*100:.0f}% 조합의 Fixed 데이터가 없습니다.")
@@ -1529,12 +1535,44 @@ def render_tab2_gbm(df_gbm, beta):
     else:
         st.info("히트맵을 그릴 데이터가 부족합니다.")
 
+    # Vol-Adjusted 히트맵 (Guardrail 대비 추가 개선)
+    if _has_vol:
+        st.markdown("---")
+        st.subheader("1b. 성공률 차이 히트맵 (Vol-Adjusted − Guardrail)")
+        st.caption("녹색 = Vol-Adjusted 추가 우위. 변동성이 높을수록 동적 밴드 효과가 커집니다.")
+
+        vol_diff_matrix = np.full((len(init_wrs_gbm), len(sigmas)), np.nan)
+        for i_w, wr in enumerate(init_wrs_gbm):
+            for j_s, sig in enumerate(sigmas):
+                g_r = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['init_wr'] == wr)]
+                v_r = gbm_vol[(gbm_vol['sigma'] == sig) & (gbm_vol['init_wr'] == wr)]
+                if len(g_r) > 0 and len(v_r) > 0:
+                    vol_diff_matrix[i_w, j_s] = (
+                        v_r.iloc[0]['x_success_rate'] - g_r.iloc[0]['x_success_rate']) * 100
+
+        valid_v = vol_diff_matrix[np.isfinite(vol_diff_matrix)]
+        if len(valid_v) > 0:
+            zmax_v = max(abs(valid_v.min()), abs(valid_v.max()), 1)
+            fig_hm_v = go.Figure(data=go.Heatmap(
+                z=vol_diff_matrix,
+                x=[f"{s*100:.0f}%" for s in sigmas],
+                y=[f"{w*100:.1f}%" for w in init_wrs_gbm],
+                colorscale='RdYlGn', zmid=0, zmin=-zmax_v, zmax=zmax_v,
+                text=np.round(vol_diff_matrix, 1),
+                texttemplate='%{text:+.1f}',
+                textfont={"size": 8},
+                colorbar=dict(title="SR 차이(%p)")
+            ))
+            fig_hm_v.update_layout(xaxis_title="변동성 \u03c3", yaxis_title="초기인출률", height=500)
+            st.plotly_chart(fig_hm_v, width='stretch')
+
     # ========================================
     # 2. 변동성별 성공률 곡선
     # ========================================
     st.markdown("---")
     st.subheader("2. 변동성별 성공률 곡선")
-    st.caption("실선=Guardrail MC, 점선=Fixed MC, 점점선=Fixed Closed-form")
+    st.caption("실선=Guardrail MC, 점선=Fixed MC, 점점선=Fixed Closed-form" +
+               (", 마커+굵은선=Vol-Adjusted" if _has_vol else ""))
 
     default_sigmas = [s for s in [0.04, 0.06, 0.08, 0.10, 0.14] if s in sigmas]
     if not default_sigmas:
@@ -1577,6 +1615,16 @@ def render_tab2_gbm(df_gbm, beta):
                     line=dict(color=clr, width=2.5), marker=dict(size=3),
                     legendgroup=f'sig{sig}',
                 ))
+            if _has_vol:
+                v_data = gbm_vol[gbm_vol['sigma'] == sig].sort_values('init_wr')
+                if len(v_data) > 0:
+                    fig_curve.add_trace(go.Scatter(
+                        x=v_data['init_wr'] * 100, y=v_data['x_success_rate'],
+                        mode='lines+markers', name=f'VolAdj \u03c3={sig*100:.0f}%',
+                        line=dict(color=clr, width=2, dash='dashdot'),
+                        marker=dict(size=5, symbol='star'),
+                        legendgroup=f'sig{sig}',
+                    ))
         fig_curve.update_layout(
             xaxis_title="초기인출률 (%)", yaxis_title="성공률", height=500,
             xaxis=dict(ticksuffix='%'), yaxis=dict(tickformat='.0%'),
@@ -1595,12 +1643,15 @@ def render_tab2_gbm(df_gbm, beta):
     ref_wr_val = min(init_wrs_gbm, key=lambda x: abs(x - 0.06))
     st.caption(f"인출률 {ref_wr_val*100:.0f}% 기준, 변동성별 누적인출금 중앙값.")
 
-    cum_f, cum_g = [], []
+    cum_f, cum_g, cum_v = [], [], []
     for sig in sigmas:
         f_r = gbm_fixed[(gbm_fixed['sigma'] == sig) & (gbm_fixed['init_wr'] == ref_wr_val)]
         g_r = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['init_wr'] == ref_wr_val)]
         cum_f.append(f_r.iloc[0]['y_cum_withdraw_median'] if len(f_r) > 0 else np.nan)
         cum_g.append(g_r.iloc[0]['y_cum_withdraw_median'] if len(g_r) > 0 else np.nan)
+        if _has_vol:
+            v_r = gbm_vol[(gbm_vol['sigma'] == sig) & (gbm_vol['init_wr'] == ref_wr_val)]
+            cum_v.append(v_r.iloc[0]['y_cum_withdraw_median'] if len(v_r) > 0 else np.nan)
 
     if any(np.isfinite(v) for v in cum_f + cum_g):
         fig_cum = go.Figure()
@@ -1614,6 +1665,13 @@ def render_tab2_gbm(df_gbm, beta):
             mode='lines+markers', name=f'Guardrail (\u00b1{gbm_band*100:.0f}%)',
             line=dict(color='#2196F3', width=2.5), marker=dict(size=6),
         ))
+        if _has_vol and cum_v:
+            fig_cum.add_trace(go.Scatter(
+                x=[s*100 for s in sigmas], y=cum_v,
+                mode='lines+markers', name=f'Vol-Adjusted (\u00b1{gbm_band*100:.0f}%)',
+                line=dict(color='#FF9800', width=2, dash='dashdot'),
+                marker=dict(size=6, symbol='star'),
+            ))
         fig_cum.update_layout(
             xaxis_title="변동성 \u03c3 (%)", yaxis_title="누적인출금 중앙값", height=400,
             xaxis=dict(ticksuffix='%'),
@@ -1630,12 +1688,15 @@ def render_tab2_gbm(df_gbm, beta):
     st.subheader("4. 기말잔고 비교 (Fixed vs Guardrail)")
     st.caption(f"인출률 {ref_wr_val*100:.0f}% 기준. 변동성↑일수록 Guardrail 잔고 보전↑.")
 
-    nav_f, nav_g = [], []
+    nav_f, nav_g, nav_v = [], [], []
     for sig in sigmas:
         f_r = gbm_fixed[(gbm_fixed['sigma'] == sig) & (gbm_fixed['init_wr'] == ref_wr_val)]
         g_r = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['init_wr'] == ref_wr_val)]
         nav_f.append(f_r.iloc[0]['terminal_nav_median'] if len(f_r) > 0 else np.nan)
         nav_g.append(g_r.iloc[0]['terminal_nav_median'] if len(g_r) > 0 else np.nan)
+        if _has_vol:
+            v_r = gbm_vol[(gbm_vol['sigma'] == sig) & (gbm_vol['init_wr'] == ref_wr_val)]
+            nav_v.append(v_r.iloc[0]['terminal_nav_median'] if len(v_r) > 0 else np.nan)
 
     if any(np.isfinite(v) for v in nav_f + nav_g):
         fig_nav = go.Figure()
@@ -1649,6 +1710,13 @@ def render_tab2_gbm(df_gbm, beta):
             mode='lines+markers', name=f'Guardrail (\u00b1{gbm_band*100:.0f}%)',
             line=dict(color='#4CAF50', width=2.5), marker=dict(size=6),
         ))
+        if _has_vol and nav_v:
+            fig_nav.add_trace(go.Scatter(
+                x=[s*100 for s in sigmas], y=nav_v,
+                mode='lines+markers', name=f'Vol-Adjusted (\u00b1{gbm_band*100:.0f}%)',
+                line=dict(color='#FF9800', width=2, dash='dashdot'),
+                marker=dict(size=6, symbol='star'),
+            ))
         fig_nav.update_layout(
             xaxis_title="변동성 \u03c3 (%)", yaxis_title="기말잔고 중앙값", height=400,
             xaxis=dict(ticksuffix='%'),
@@ -1665,12 +1733,15 @@ def render_tab2_gbm(df_gbm, beta):
     st.subheader("5. 최대 지속가능 인출률 (성공률 \u2265 90%)")
     st.caption("두 선의 간격 = Guardrail이 확보하는 추가 여유.")
 
-    max_wr_f, max_wr_g = [], []
+    max_wr_f, max_wr_g, max_wr_v = [], [], []
     for sig in sigmas:
         f_ok = gbm_fixed[(gbm_fixed['sigma'] == sig) & (gbm_fixed['x_success_rate'] >= 0.90)]
         max_wr_f.append(f_ok['init_wr'].max() * 100 if len(f_ok) > 0 else 0)
         g_ok = gbm_guard[(gbm_guard['sigma'] == sig) & (gbm_guard['x_success_rate'] >= 0.90)]
         max_wr_g.append(g_ok['init_wr'].max() * 100 if len(g_ok) > 0 else 0)
+        if _has_vol:
+            v_ok = gbm_vol[(gbm_vol['sigma'] == sig) & (gbm_vol['x_success_rate'] >= 0.90)]
+            max_wr_v.append(v_ok['init_wr'].max() * 100 if len(v_ok) > 0 else 0)
 
     fig_max = go.Figure()
     fig_max.add_trace(go.Scatter(
@@ -1683,6 +1754,13 @@ def render_tab2_gbm(df_gbm, beta):
         mode='lines+markers', name=f'Guardrail (\u00b1{gbm_band*100:.0f}%)',
         line=dict(color='#2196F3', width=2.5), marker=dict(size=6),
     ))
+    if _has_vol and max_wr_v:
+        fig_max.add_trace(go.Scatter(
+            x=[s*100 for s in sigmas], y=max_wr_v,
+            mode='lines+markers', name=f'Vol-Adjusted (\u00b1{gbm_band*100:.0f}%)',
+            line=dict(color='#FF9800', width=2, dash='dashdot'),
+            marker=dict(size=6, symbol='star'),
+        ))
     fig_max.update_layout(
         xaxis_title="변동성 \u03c3 (%)", yaxis_title="최대 지속가능 인출률 (%)", height=420,
         xaxis=dict(ticksuffix='%'), yaxis=dict(ticksuffix='%'),
@@ -1716,7 +1794,7 @@ def render_tab2_gbm(df_gbm, beta):
                         if len(f_s[f_s['x_success_rate'] >= 0.90]) > 0 else 0)
             g_max_wr = (g_s[g_s['x_success_rate'] >= 0.90]['init_wr'].max() * 100
                         if len(g_s[g_s['x_success_rate'] >= 0.90]) > 0 else 0)
-            summary_rows.append({
+            row = {
                 '\u03c3': f"{sig*100:.0f}%",
                 'Fixed SR': f"{f_sr:.1f}%" if f_sr else "-",
                 'Guard SR': f"{g_sr:.1f}%" if g_sr else "-",
@@ -1726,7 +1804,16 @@ def render_tab2_gbm(df_gbm, beta):
                 'Fixed 잔고': f"{f_nav_v:.1f}" if f_nav_v else "-",
                 'Guard 잔고': f"{g_nav_v:.1f}" if g_nav_v else "-",
                 'Guard 최대WR': f"{g_max_wr:.1f}%",
-            })
+            }
+            if _has_vol:
+                v_ref = gbm_vol[gbm_vol['sigma'] == sig]
+                v_ref_wr = v_ref[v_ref['init_wr'].round(3) == round(ref_wr_val, 3)]
+                v_sr = v_ref_wr.iloc[0]['x_success_rate'] * 100 if len(v_ref_wr) > 0 else None
+                v_max_wr = (v_ref[v_ref['x_success_rate'] >= 0.90]['init_wr'].max() * 100
+                            if len(v_ref[v_ref['x_success_rate'] >= 0.90]) > 0 else 0)
+                row['VolAdj SR'] = f"{v_sr:.1f}%" if v_sr else "-"
+                row['VolAdj 최대WR'] = f"{v_max_wr:.1f}%"
+            summary_rows.append(row)
     if summary_rows:
         st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
     else:
@@ -1926,6 +2013,16 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                 mode='lines+markers', name=f'Guardrail',
                 line=dict(color=color, width=2.5), marker=dict(size=4),
             ))
+        vol_data = df[(df['portfolio'] == sel_port) &
+                      (df['strategy_type'] == 'vol_adjusted') & (df['band'] == hist_band)]
+        if len(vol_data) > 0:
+            vol_by_wr = vol_data.groupby('init_wr')['success_rate'].max().reset_index().sort_values('init_wr')
+            fig_curve.add_trace(go.Scatter(
+                x=vol_by_wr['init_wr'] * 100, y=vol_by_wr['success_rate'],
+                mode='lines+markers', name='Vol-Adjusted',
+                line=dict(color='#FF9800', width=2, dash='dashdot'),
+                marker=dict(size=5, symbol='star'),
+            ))
 
         fig_curve.update_layout(
             xaxis_title="초기인출률 (%)", yaxis_title="성공률", height=400,
@@ -2064,6 +2161,21 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
                         line=dict(color='#2196F3', width=2.5), marker=dict(size=4),
                     ))
 
+                # Vol-Adjusted (GBM)
+                gbm_vol_tab3 = df_gbm[
+                    (df_gbm['mu'] == gbm_mu) & (df_gbm['beta'] == gbm_beta) &
+                    (df_gbm['strategy_type'] == 'vol_adjusted') & (df_gbm['band'] == gbm_band)
+                ] if 'vol_adjusted' in df_gbm['strategy_type'].values else pd.DataFrame()
+                if len(gbm_vol_tab3) > 0:
+                    v_data = gbm_vol_tab3[gbm_vol_tab3['sigma'] == sel_sigma].sort_values('init_wr')
+                    if len(v_data) > 0:
+                        fig_gbm_curve.add_trace(go.Scatter(
+                            x=v_data['init_wr'] * 100, y=v_data['x_success_rate'],
+                            mode='lines+markers', name='Vol-Adjusted',
+                            line=dict(color='#FF9800', width=2, dash='dashdot'),
+                            marker=dict(size=5, symbol='star'),
+                        ))
+
                 fig_gbm_curve.update_layout(
                     xaxis_title="초기인출률 (%)", yaxis_title="성공률", height=400,
                     xaxis=dict(ticksuffix='%'), yaxis=dict(tickformat='.0%'),
@@ -2103,7 +2215,7 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
     # ========================================
     st.subheader("1. Guardrail 효과 분석: 언제 유리하고 언제 불리한가")
 
-    # 전 포트폴리오 × 전 인출률에 대해 Fixed vs Guardrail 비교
+    # 전 포트폴리오 × 전 인출률에 대해 Fixed vs Guardrail vs Vol-Adjusted 비교
     _eff_rows = []
     for port in portfolios:
         for wr in wrs:
@@ -2111,6 +2223,8 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
                        (df['strategy_type'] == 'fixed_baseline')]
             g_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
                        (df['strategy_type'] == 'dynamic') & (df['band'] == hist_band)]
+            v_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
+                       (df['strategy_type'] == 'vol_adjusted') & (df['band'] == hist_band)]
             if len(f_row) > 0 and len(g_row) > 0:
                 fr = f_row.iloc[0]
                 gr = g_row.iloc[0]
@@ -2118,7 +2232,7 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
                 f_total = (fr.get('terminal_nav_median', 0) or 0) + fr['cum_withdraw_median']
                 g_total = (gr.get('terminal_nav_median', 0) or 0) + gr['cum_withdraw_median']
                 total_d = g_total - f_total
-                _eff_rows.append({
+                row = {
                     '포트폴리오': port,
                     '초기인출률': f"{wr*100:.1f}%",
                     'Fixed 목표달성률': f"{fr['success_rate']*100:.1f}%",
@@ -2129,7 +2243,13 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
                     '총 가치 차이': round(total_d, 1),
                     '_sr_diff': sr_d,
                     '_total_diff': total_d,
-                })
+                }
+                if len(v_row) > 0:
+                    vr = v_row.iloc[0]
+                    v_sr_d = (vr['success_rate'] - gr['success_rate']) * 100
+                    row['VolAdj 목표달성률'] = f"{vr['success_rate']*100:.1f}%"
+                    row['VolAdj vs Guard(%p)'] = round(v_sr_d, 1)
+                _eff_rows.append(row)
 
     if _eff_rows:
         _eff_df = pd.DataFrame(_eff_rows)
@@ -2185,6 +2305,15 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
             f"Guardrail 도입의 비용(기회비용)이 낮다는 긍정적 신호입니다.<br>"
             f"\u2022 Band \u00b15%의 소폭 조정으로도 충분한 효과를 얻을 수 있어, "
             f"수익자 입장에서 인출액 변동의 체감 불편이 최소화됩니다."
+        ), unsafe_allow_html=True)
+
+        st.markdown(_finding_box(
+            f"<b>4. Volatility-Adjusted Guardrail</b><br>"
+            f"\u2022 <b>밴드 폭을 실현 변동성으로 동적 조정</b>: "
+            f"고변동성 구간에서는 밴드를 확대하여 더 적극적으로 인출을 조절하고, "
+            f"저변동성 구간에서는 밴드를 축소하여 인출 안정성을 유지합니다.<br>"
+            f"\u2022 σ_realized / σ_target 비율로 밴드 폭을 0.5x~2.0x 범위에서 자동 조정합니다.<br>"
+            f"\u2022 기존 Guardrail 대비 <b>고변동성 환경에서 추가적인 자본 보전 효과</b>가 기대됩니다."
         ), unsafe_allow_html=True)
 
     else:
