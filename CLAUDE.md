@@ -43,12 +43,14 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 3. `engine.py::daily_to_monthly_returns`로 월간 변환, `generate_paths_rolling`/`generate_paths_bootstrap`로 수익률 경로 생성
 4. `engine.py::simulate_withdrawal_on_path`로 경로별 인출 시뮬레이션, `evaluate_strategy`로 집계
 5. `grid_search.py`가 파라미터 그리드 순회 -> `pareto_frontier` / `select_optimal` 플래그와 함께 결과 저장
-6. `viewer.py`가 pkl 로드 후 5개 탭 렌더링 (설득 흐름):
+6. `viewer.py`가 pkl 로드 후 7개 탭 렌더링 (설득 흐름):
    1) Guardrail 효과 — Fixed vs Guardrail 비교 인포그래픽 (240개월 시뮬레이션)
    DV) 데이터 검증 — 실제 과거 데이터 기반 스파게티 차트 + 기말잔액 분포
    2) 이론 분석 (GBM) — 변동성별 Fixed vs Guardrail 체계 비교
    3) 실제 포트폴리오 검증 — 2컬럼 (좌: Historical 히트맵/곡선, 우: GBM 히트맵/곡선) + full-width 효과 분석/분석결과
    4) Band 최적화 — Band별 성공률 곡선 (간결화)
+   5) Vol-Adjusted — 변동성 조정 Guardrail 전략 분석 (Fixed vs Guardrail vs Vol-Adjusted 3종 비교)
+   6) Assumptions — 시뮬레이션 전제 조건 및 파라미터 정리
 
 ### 모듈별 역할
 
@@ -56,7 +58,7 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 - **`engine.py`**: 핵심 시뮬레이션 엔진. 경로 생성(rolling/bootstrap/GBM), `simulate_withdrawal_on_path` (scalar), `simulate_withdrawal_on_paths_vectorized` (numpy 벡터화), `evaluate_strategy` / `evaluate_gbm_strategy` (집계 지표), `pareto_frontier`, `select_optimal`. `__main__` 블록에 검증 테스트 포함 (벡터화 vs scalar 일치 확인).
 - **`grid_search.py`**: Historical 파라미터 그리드 정의. 출력: `grid_results_full.pkl`, `grid_results_summary.xlsx`.
 - **`gbm_grid_search.py`**: GBM MC 파라미터 그리드 (mu 2-12%, sigma 2-20%, init_wr 3-15%, band 5종, beta 5종). Fixed 케이스에 Closed-form 확률도 동시 계산 (`cf_success_rate`). 출력: `gbm_results.pkl` (130,625 레코드), `gbm_results_summary.xlsx`.
-- **`viewer.py`**: Streamlit 앱 (5개 탭, 설득 흐름 구조). `@st.cache_data`로 데이터 캐싱. `BETA_LABELS` 5단계. 사이드바에 글로벌 컨트롤 3개 (원본 대비 기말잔액 비율 / 초기 인출률 / 데이터 기반). Tab 1(Fixed vs Guardrail 비교 인포그래픽), Tab DV(데이터 검증 스파게티), Tab 2(GBM 변동성별 분석), Tab 3(2컬럼: 좌 Historical + 우 GBM 비교 + full-width 효과 분석/분석결과), Tab 4(Band별 성공률 곡선만). 디폴트 데이터 기반: Bootstrap.
+- **`viewer.py`**: Streamlit 앱 (7개 탭, 설득 흐름 구조). `@st.cache_data`로 데이터 캐싱. `BETA_LABELS` 5단계. 사이드바에 글로벌 컨트롤 3개 (원본 대비 기말잔액 비율 / 초기 인출률 / 데이터 기반). Tab 1(Fixed vs Guardrail 비교 인포그래픽), Tab DV(데이터 검증 스파게티), Tab 2(GBM 변동성별 분석), Tab 3(2컬럼: 좌 Historical + 우 GBM 비교 + full-width 효과 분석/분석결과), Tab 4(Band별 성공률 곡선만), Tab 5(Vol-Adjusted 3종 비교), Tab 6(Assumptions). 디폴트 데이터 기반: Bootstrap.
 - **`guardrail_infographic.py`**: standalone matplotlib 인포그래픽 (NAV + 인출 화살표). 출력: `guardrail_infographic.png/svg`.
 - **`guardrail_persuasion.py`**: standalone matplotlib 비교 차트 (Fixed vs Guardrail NAV + 인출액). 출력: `guardrail_persuasion.png/svg`.
 - **`dynamic_simulator.py`**: 기존 시뮬레이터 (Fixed/Guardrails 전략). 참조용. 추후 통합 여부 판단.
@@ -83,7 +85,7 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 - **fixed_baseline**: `band=99.0` (사실상 guardrail 없음), `adj_on=False`. 순수 고정 인출.
 - **dynamic**: 실제 guardrail 밴드 (0.05~0.20), 고정 밴드 폭.
-- **vol_adjusted**: `vol_adj=True`. 실현 변동성으로 밴드 폭을 동적 조정. `sigma_target`은 Historical→전체 표본 σ, GBM→생성 파라미터 σ.
+- **vol_adjusted**: `vol_adj=True`. 실현 변동성으로 밴드 폭을 동적 조정. `sigma_target`은 포트폴리오의 `target_risk` (PORTFOLIOS 딕셔너리에 정의된 목표 변동성).
 
 ### 성공/실패 정의
 

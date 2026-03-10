@@ -2321,6 +2321,740 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
 
 
 # ============================================================================
+# Tab Vol-Adjusted: 변동성 조정 Guardrail 분석
+# ============================================================================
+
+def render_tab_vol_adjusted(df_all, beta, path_method, df_gbm=None):
+    """Vol-Adjusted Guardrail 탭: Fixed / Guardrail / Vol-Adjusted 3종 비교 분석."""
+
+    st.markdown("### Volatility-Adjusted Guardrail")
+    st.caption(
+        f"실현 변동성으로 밴드 폭을 동적 조정하는 전략. "
+        f"**기말잔액 비율: {beta*100:.0f}%** | **데이터: {PATH_METHOD_LABELS.get(path_method, path_method)}** "
+        f"| **Base Band: ±{FIXED_BAND*100:.0f}%**"
+    )
+
+    hist_band = FIXED_BAND
+    df = df_all[(df_all['beta'] == beta) & (df_all['path_method'] == path_method)].copy()
+    if len(df) == 0:
+        st.warning("선택된 조합에 맞는 데이터가 없습니다.")
+        return
+
+    # Vol-Adjusted 데이터 존재 여부
+    has_vol = 'vol_adjusted' in df['strategy_type'].values
+    if not has_vol:
+        st.warning("Vol-Adjusted 전략 데이터가 없습니다. grid_search.py를 다시 실행하세요.")
+        return
+
+    portfolios = sorted(df['portfolio'].unique())
+    wrs = sorted(df['init_wr'].unique())
+
+    # ========================================
+    # 메커니즘 설명
+    # ========================================
+    st.markdown(_finding_box(
+        "<b>메커니즘</b><br>"
+        "• 매월 최근 12개월 실현 변동성(σ_realized)을 측정하고, 목표 변동성(σ_target) 대비 비율로 밴드 폭을 조정합니다.<br>"
+        "• <code>effective_band = base_band × clip(σ_realized / σ_target, 0.5, 2.0)</code><br>"
+        "• <b>고변동성 구간</b>: 밴드 확대 → 인출 조절 강화 (자본 보전) | "
+        "<b>저변동성 구간</b>: 밴드 축소 → 인출 안정 유지"
+    ), unsafe_allow_html=True)
+
+    # ========================================
+    # 메커니즘 시각화: NAV 경로 + 동적 밴드 + 인출 비율
+    # ========================================
+    _va_init_wr = 0.06  # 시뮬레이션용 고정 인출률
+    _va_target = _va_init_wr / 12
+    _va_base_band = 0.15  # 시각적으로 넓은 밴드
+    _va_n = 240
+    _va_nav0 = 100.0
+    _va_w0 = _va_target * _va_nav0
+    _va_lookback = 12
+
+    # 수익률 경로 (4 국면)
+    _va_rng = np.random.RandomState(7)
+    _va_rets = np.concatenate([
+        _va_rng.normal(0.005, 0.020, 60),   # 안정기
+        _va_rng.normal(-0.018, 0.038, 60),   # 하락기 (GFC급)
+        _va_rng.normal(0.018, 0.020, 60),    # 회복기
+        _va_rng.normal(0.013, 0.016, 60),    # 후기
+    ])
+
+    # σ_target = 전체 표본 σ
+    _va_sigma_target = np.std(_va_rets, ddof=1) * np.sqrt(12)
+
+    # --- Guardrail (고정 밴드) ---
+    _va_nav_g = np.zeros(_va_n + 1); _va_nav_g[0] = _va_nav0
+    _va_wg = np.zeros(_va_n + 1); _va_wg[0] = _va_w0
+    _va_hi_g = _va_target * (1 + _va_base_band)
+    _va_lo_g = _va_target * (1 - _va_base_band)
+    for _t in range(_va_n):
+        _g = _va_nav_g[_t] * (1 + _va_rets[_t])
+        if _g <= 0:
+            _va_nav_g[_t + 1] = 0; _va_wg[_t + 1] = 0; continue
+        _ratio = _va_wg[_t] / _g
+        if _ratio > _va_hi_g:
+            _va_wg[_t + 1] = _va_hi_g * _g
+        elif _ratio < _va_lo_g:
+            _va_wg[_t + 1] = _va_lo_g * _g
+        else:
+            _va_wg[_t + 1] = _va_wg[_t]
+        _va_nav_g[_t + 1] = max(_g - _va_wg[_t + 1], 0)
+
+    # --- Vol-Adjusted (동적 밴드) ---
+    _va_nav_v = np.zeros(_va_n + 1); _va_nav_v[0] = _va_nav0
+    _va_wv = np.zeros(_va_n + 1); _va_wv[0] = _va_w0
+    _va_eff_band = np.full(_va_n + 1, _va_base_band)  # effective band 기록
+    _va_sigma_ratio = np.ones(_va_n + 1)
+    for _t in range(_va_n):
+        _g = _va_nav_v[_t] * (1 + _va_rets[_t])
+        if _g <= 0:
+            _va_nav_v[_t + 1] = 0; _va_wv[_t + 1] = 0; continue
+        # 동적 밴드 계산
+        if _t >= _va_lookback:
+            _recent = _va_rets[_t - _va_lookback + 1: _t + 1]
+            _sig_r = np.std(_recent, ddof=1) * np.sqrt(12)
+            _s_ratio = np.clip(_sig_r / _va_sigma_target, 0.5, 2.0)
+        else:
+            _s_ratio = 1.0
+        _va_sigma_ratio[_t + 1] = _s_ratio
+        _eff_b = _va_base_band * _s_ratio
+        _va_eff_band[_t + 1] = _eff_b
+        _hi_v = _va_target * (1 + _eff_b)
+        _lo_v = _va_target * (1 - _eff_b)
+        _ratio = _va_wv[_t] / _g
+        if _ratio > _hi_v:
+            _va_wv[_t + 1] = _hi_v * _g
+        elif _ratio < _lo_v:
+            _va_wv[_t + 1] = _lo_v * _g
+        else:
+            _va_wv[_t + 1] = _va_wv[_t]
+        _va_nav_v[_t + 1] = max(_g - _va_wv[_t + 1], 0)
+
+    # --- 정규화: W / (pre_withdrawal_NAV × target) → 1.0 = 목표 ---
+    _va_grown_g = np.zeros(_va_n + 1); _va_grown_g[0] = _va_nav0
+    _va_grown_v = np.zeros(_va_n + 1); _va_grown_v[0] = _va_nav0
+    _va_grown_g[1:] = _va_nav_g[1:] + _va_wg[1:]
+    _va_grown_v[1:] = _va_nav_v[1:] + _va_wv[1:]
+    _va_norm_g = np.where(_va_grown_g > 0, _va_wg / (_va_grown_g * _va_target), 0)
+    _va_norm_v = np.where(_va_grown_v > 0, _va_wv / (_va_grown_v * _va_target), 0)
+
+    # 동적 밴드 상하한 (정규화 기준)
+    _va_band_hi_dyn = 1 + _va_eff_band  # (n+1,)
+    _va_band_lo_dyn = 1 - _va_eff_band  # (n+1,)
+    _va_band_hi_fix = 1 + _va_base_band
+    _va_band_lo_fix = 1 - _va_base_band
+    _va_time = np.arange(_va_n + 1)
+
+    # 4국면 정의
+    _va_phases = [
+        (0, 60, 'rgba(226,232,240,0.15)', '안정기', '#94a3b8'),
+        (60, 120, 'rgba(254,202,202,0.30)', '하락기', '#f87171'),
+        (120, 180, 'rgba(187,247,208,0.30)', '회복기', '#4ade80'),
+        (180, _va_n, 'rgba(191,219,254,0.15)', '후기 랠리', '#93c5fd'),
+    ]
+
+    # ===== 차트 1: NAV 경로 비교 (Guardrail vs Vol-Adjusted) =====
+    st.markdown(
+        '<p style="font-size:0.95em; font-weight:600; color:#334155; '
+        'margin: 16px 0 4px 0;">NAV 경로: 고정 밴드 vs 동적 밴드</p>',
+        unsafe_allow_html=True,
+    )
+
+    fig_va_nav = go.Figure()
+    for _x0, _x1, _fc, _lbl, _lc in _va_phases:
+        fig_va_nav.add_vrect(x0=_x0, x1=_x1, fillcolor=_fc, line_width=0)
+        fig_va_nav.add_annotation(
+            x=(_x0 + _x1) / 2, y=1.0, yref='paper',
+            text=f'<i>{_lbl}</i>', showarrow=False,
+            font=dict(size=9, color=_lc), yanchor='top')
+
+    # 시장 (인출 없음)
+    _va_mkt = np.zeros(_va_n + 1); _va_mkt[0] = _va_nav0
+    for _t in range(_va_n):
+        _va_mkt[_t + 1] = _va_mkt[_t] * (1 + _va_rets[_t])
+
+    fig_va_nav.add_trace(go.Scatter(
+        x=_va_time, y=_va_mkt, mode='lines', name='시장 (인출 없음)',
+        line=dict(color='#cbd5e1', width=1.5, dash='dot'),
+    ))
+    fig_va_nav.add_trace(go.Scatter(
+        x=_va_time, y=_va_nav_g, mode='lines', name='Guardrail (고정 밴드)',
+        line=dict(color='#16a34a', width=2),
+    ))
+    fig_va_nav.add_trace(go.Scatter(
+        x=_va_time, y=_va_nav_v, mode='lines', name='Vol-Adjusted (동적 밴드)',
+        line=dict(color='#FF9800', width=2.5),
+    ))
+
+    _va_target_line = _va_nav0 * beta
+    fig_va_nav.add_hline(y=_va_target_line, line_dash='dash', line_color='#ef4444',
+                         line_width=1.5, annotation_text=f'기말목표 ({beta*100:.0f}%)',
+                         annotation_position='bottom right',
+                         annotation_font=dict(size=10, color='#ef4444'))
+
+    fig_va_nav.update_layout(
+        height=300, margin=dict(t=10, b=10, l=50, r=20),
+        plot_bgcolor='#f8fafc', paper_bgcolor='white',
+        yaxis=dict(title_text='NAV', title_font=dict(size=11, color='#64748b'),
+                   showgrid=False, zeroline=False, tickfont=dict(size=10, color='#94a3b8')),
+        xaxis=dict(showticklabels=False, showgrid=False),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+                    font=dict(size=11), bgcolor='rgba(248,250,252,0.9)',
+                    bordercolor='#e2e8f0', borderwidth=1),
+    )
+    st.plotly_chart(fig_va_nav, use_container_width=True)
+    st.caption(
+        f"Guardrail(고정 ±{_va_base_band*100:.0f}%) vs Vol-Adjusted(동적 밴드). "
+        f"동일 수익률 경로에서 NAV 보전 차이를 확인합니다. "
+        f"기말 NAV — Guardrail: {_va_nav_g[-1]:.1f}, Vol-Adjusted: {_va_nav_v[-1]:.1f}"
+    )
+
+    # ===== 차트 2: 밴드 + 인출 비율 (핵심 차트) =====
+    st.markdown(
+        '<p style="font-size:0.95em; font-weight:600; color:#334155; '
+        'margin: 16px 0 4px 0;">Vol-Adjusted 밴드 메커니즘: 밴드가 시장에 반응한다</p>',
+        unsafe_allow_html=True,
+    )
+
+    fig_va_band = go.Figure()
+
+    # 국면별 배경 음영
+    for _x0, _x1, _fc, _lbl, _lc in _va_phases:
+        fig_va_band.add_vrect(x0=_x0, x1=_x1, fillcolor=_fc, line_width=0)
+        fig_va_band.add_annotation(
+            x=(_x0 + _x1) / 2, y=1.0, yref='paper',
+            text=f'<i>{_lbl}</i>', showarrow=False,
+            font=dict(size=9, color=_lc), yanchor='top')
+
+    # 동적 밴드 fill (Vol-Adjusted)
+    fig_va_band.add_trace(go.Scatter(
+        x=np.concatenate([_va_time, _va_time[::-1]]),
+        y=np.concatenate([_va_band_hi_dyn, _va_band_lo_dyn[::-1]]),
+        fill='toself', fillcolor='rgba(255,152,0,0.15)',
+        line=dict(width=0), showlegend=True,
+        name='동적 밴드 (Vol-Adjusted)',
+        hoverinfo='skip',
+    ))
+    # 동적 밴드 경계선
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=_va_band_hi_dyn, mode='lines',
+        line=dict(color='rgba(255,152,0,0.6)', width=1.5),
+        showlegend=False, hovertemplate='%{x}개월<br>동적 상한: %{y:.3f}<extra></extra>',
+    ))
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=_va_band_lo_dyn, mode='lines',
+        line=dict(color='rgba(255,152,0,0.6)', width=1.5),
+        showlegend=False, hovertemplate='%{x}개월<br>동적 하한: %{y:.3f}<extra></extra>',
+    ))
+
+    # 고정 밴드 경계선 (Guardrail)
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=np.full(_va_n + 1, _va_band_hi_fix), mode='lines',
+        line=dict(color='rgba(22,163,106,0.4)', width=1.5, dash='dot'),
+        showlegend=True, name=f'고정 밴드 (±{_va_base_band*100:.0f}%)',
+        hoverinfo='skip',
+    ))
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=np.full(_va_n + 1, _va_band_lo_fix), mode='lines',
+        line=dict(color='rgba(22,163,106,0.4)', width=1.5, dash='dot'),
+        showlegend=False, hoverinfo='skip',
+    ))
+
+    # 중심선 (목표)
+    fig_va_band.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8', line_width=1)
+
+    # Guardrail 인출 비율
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=_va_norm_g, mode='lines',
+        line=dict(color='#16a34a', width=2),
+        name='Guardrail 인출비율',
+        hovertemplate='%{x}개월<br>비율: %{y:.3f}<extra></extra>',
+    ))
+
+    # Vol-Adjusted 인출 비율
+    fig_va_band.add_trace(go.Scatter(
+        x=_va_time, y=_va_norm_v, mode='lines',
+        line=dict(color='#FF9800', width=2.5),
+        name='Vol-Adjusted 인출비율',
+        hovertemplate='%{x}개월<br>비율: %{y:.3f}<extra></extra>',
+    ))
+
+    # 밴드 확대 구간 하이라이트 (sigma_ratio > 1.2)
+    _high_vol_idx = np.where(_va_sigma_ratio > 1.2)[0]
+    if len(_high_vol_idx) > 0:
+        # 연속 구간의 시작점만 마커
+        _starts = [_high_vol_idx[0]]
+        for i in range(1, len(_high_vol_idx)):
+            if _high_vol_idx[i] - _high_vol_idx[i-1] > 5:
+                _starts.append(_high_vol_idx[i])
+        for _s in _starts[:3]:  # 최대 3개
+            fig_va_band.add_annotation(
+                x=_s, y=_va_band_hi_dyn[_s],
+                text='밴드 확대', showarrow=True, arrowhead=2,
+                arrowcolor='#FF9800', ax=0, ay=-25,
+                font=dict(size=9, color='#FF9800'),
+                bgcolor='white', bordercolor='#FFE0B2', borderwidth=1, borderpad=2)
+
+    _va_y_max = max(float(_va_norm_g.max()), float(_va_norm_v.max()),
+                    float(_va_band_hi_dyn.max()), _va_band_hi_fix) + 0.08
+    _va_y_min = min(float(_va_band_lo_dyn.min()), _va_band_lo_fix) - 0.08
+
+    fig_va_band.update_layout(
+        height=380, margin=dict(t=10, b=10, l=50, r=20),
+        plot_bgcolor='#f8fafc', paper_bgcolor='white',
+        legend=dict(
+            orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0,
+            font=dict(size=10), bgcolor='rgba(248,250,252,0.9)',
+            bordercolor='#e2e8f0', borderwidth=1,
+        ),
+        yaxis=dict(
+            title_text='W/NAV 비율 (목표=1.0)',
+            title_font=dict(size=11, color='#64748b'),
+            range=[_va_y_min, _va_y_max],
+            showgrid=False, zeroline=False, linecolor='#e2e8f0',
+            tickfont=dict(size=10, color='#94a3b8'), tickformat='.2f',
+        ),
+        xaxis=dict(showticklabels=False, showgrid=False, linecolor='#e2e8f0'),
+    )
+    st.plotly_chart(fig_va_band, use_container_width=True)
+
+    st.caption(
+        "주황 영역 = Vol-Adjusted 동적 밴드, 점선 = 고정 밴드. "
+        "하락기에 실현 변동성↑ → 밴드 확대 → 인출 조절 강화. "
+        "안정기에는 밴드가 축소되어 고정 밴드보다 좁아집니다."
+    )
+
+    # ===== 차트 3: σ_ratio 시계열 (밴드 배율) =====
+    st.markdown(
+        '<p style="font-size:0.95em; font-weight:600; color:#334155; '
+        'margin: 16px 0 4px 0;">σ_realized / σ_target 비율 (밴드 배율)</p>',
+        unsafe_allow_html=True,
+    )
+
+    fig_sigma = go.Figure()
+    for _x0, _x1, _fc, _lbl, _lc in _va_phases:
+        fig_sigma.add_vrect(x0=_x0, x1=_x1, fillcolor=_fc, line_width=0)
+
+    fig_sigma.add_trace(go.Scatter(
+        x=_va_time, y=_va_sigma_ratio, mode='lines',
+        line=dict(color='#7c3aed', width=2),
+        name='σ ratio',
+        hovertemplate='%{x}개월<br>σ ratio: %{y:.2f}<extra></extra>',
+    ))
+    fig_sigma.add_hline(y=1.0, line_dash='dash', line_color='#94a3b8', line_width=1,
+                        annotation_text='σ_target', annotation_position='bottom right',
+                        annotation_font=dict(size=9, color='#94a3b8'))
+    fig_sigma.add_hline(y=2.0, line_dash='dot', line_color='#ef4444', line_width=1,
+                        annotation_text='상한 2.0', annotation_position='bottom right',
+                        annotation_font=dict(size=9, color='#ef4444'))
+    fig_sigma.add_hline(y=0.5, line_dash='dot', line_color='#3b82f6', line_width=1,
+                        annotation_text='하한 0.5', annotation_position='top right',
+                        annotation_font=dict(size=9, color='#3b82f6'))
+
+    fig_sigma.update_layout(
+        height=200, margin=dict(t=10, b=30, l=50, r=20),
+        plot_bgcolor='#f8fafc', paper_bgcolor='white',
+        yaxis=dict(title_text='σ ratio', title_font=dict(size=11, color='#64748b'),
+                   range=[0.3, 2.3], showgrid=False, zeroline=False,
+                   tickfont=dict(size=10, color='#94a3b8')),
+        xaxis=dict(title_text='개월', title_font=dict(size=11, color='#64748b'),
+                   showgrid=False, tickfont=dict(size=10, color='#94a3b8')),
+        showlegend=False,
+    )
+    st.plotly_chart(fig_sigma, use_container_width=True)
+
+    st.caption(
+        f"σ_target = {_va_sigma_target*100:.1f}% (시뮬레이션 경로 연율 변동성, 실제 분석에서는 포트폴리오 목표위험 사용). "
+        f"하락기에 ratio↑ → 밴드 배율 최대 2.0×, 안정기에는 ratio↓ → 밴드 축소."
+    )
+
+    # ========================================
+    # 1. 3종 비교 테이블 빌드
+    # ========================================
+    _rows = []
+    for port in portfolios:
+        for wr in wrs:
+            f_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
+                       (df['strategy_type'] == 'fixed_baseline')]
+            g_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
+                       (df['strategy_type'] == 'dynamic') & (df['band'] == hist_band)]
+            v_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
+                       (df['strategy_type'] == 'vol_adjusted') & (df['band'] == hist_band)]
+            if len(f_row) == 0 or len(g_row) == 0 or len(v_row) == 0:
+                continue
+            fr, gr, vr = f_row.iloc[0], g_row.iloc[0], v_row.iloc[0]
+
+            f_sr, g_sr, v_sr = fr['success_rate'], gr['success_rate'], vr['success_rate']
+            f_nav = fr.get('terminal_nav_median', 0) or 0
+            g_nav = gr.get('terminal_nav_median', 0) or 0
+            v_nav = vr.get('terminal_nav_median', 0) or 0
+            f_cw, g_cw, v_cw = fr['cum_withdraw_median'], gr['cum_withdraw_median'], vr['cum_withdraw_median']
+
+            _rows.append({
+                '포트폴리오': port,
+                '초기인출률': wr,
+                '_init_wr_pct': f"{wr*100:.1f}%",
+                # 성공률
+                'Fixed SR': f_sr, 'Guard SR': g_sr, 'VolAdj SR': v_sr,
+                '_va_vs_fixed_sr': (v_sr - f_sr) * 100,
+                '_va_vs_guard_sr': (v_sr - g_sr) * 100,
+                # 기말잔액
+                'Fixed NAV': f_nav, 'Guard NAV': g_nav, 'VolAdj NAV': v_nav,
+                '_va_vs_fixed_nav': v_nav - f_nav,
+                '_va_vs_guard_nav': v_nav - g_nav,
+                # 누적인출금
+                'Fixed CW': f_cw, 'Guard CW': g_cw, 'VolAdj CW': v_cw,
+                '_va_vs_fixed_cw': v_cw - f_cw,
+                '_va_vs_guard_cw': v_cw - g_cw,
+            })
+
+    if not _rows:
+        st.warning("3종 비교 데이터가 부족합니다.")
+        return
+
+    comp_df = pd.DataFrame(_rows)
+
+    # ========================================
+    # 2. 성공률 비교 차트
+    # ========================================
+    st.markdown("---")
+    st.subheader("1. 성공률 비교")
+    st.caption("Fixed / Guardrail / Vol-Adjusted 3종의 성공률 곡선. 포트폴리오별로 확인할 수 있습니다.")
+
+    col_ctrl, _ = st.columns([1, 3])
+    with col_ctrl:
+        va_port = st.selectbox("포트폴리오", options=portfolios, index=2, key='va_port')
+
+    sub = comp_df[comp_df['포트폴리오'] == va_port].sort_values('초기인출률')
+    color = PORT_COLORS.get(va_port, '#2196F3')
+
+    fig_sr = go.Figure()
+    fig_sr.add_trace(go.Scatter(
+        x=sub['초기인출률'] * 100, y=sub['Fixed SR'],
+        mode='lines+markers', name='Fixed',
+        line=dict(color='#999', width=2, dash='dash'), marker=dict(size=4),
+    ))
+    fig_sr.add_trace(go.Scatter(
+        x=sub['초기인출률'] * 100, y=sub['Guard SR'],
+        mode='lines+markers', name='Guardrail',
+        line=dict(color=color, width=2.5), marker=dict(size=4),
+    ))
+    fig_sr.add_trace(go.Scatter(
+        x=sub['초기인출률'] * 100, y=sub['VolAdj SR'],
+        mode='lines+markers', name='Vol-Adjusted',
+        line=dict(color='#FF9800', width=2.5, dash='dashdot'),
+        marker=dict(size=6, symbol='star'),
+    ))
+    fig_sr.update_layout(
+        xaxis_title="초기인출률 (%)", yaxis_title="목표달성률", height=400,
+        xaxis=dict(ticksuffix='%'), yaxis=dict(tickformat='.0%'),
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        margin=dict(t=10, b=30, l=50, r=20),
+    )
+    st.plotly_chart(fig_sr, use_container_width=True)
+
+    # ========================================
+    # 3. 기말잔액 & 누적인출금 비교 차트
+    # ========================================
+    col_nav, col_cw = st.columns(2)
+
+    with col_nav:
+        st.markdown("##### 기말잔액 (중앙값)")
+        fig_nav = go.Figure()
+        fig_nav.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['Fixed NAV'],
+            mode='lines+markers', name='Fixed',
+            line=dict(color='#999', width=2, dash='dash'), marker=dict(size=4),
+        ))
+        fig_nav.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['Guard NAV'],
+            mode='lines+markers', name='Guardrail',
+            line=dict(color=color, width=2.5), marker=dict(size=4),
+        ))
+        fig_nav.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['VolAdj NAV'],
+            mode='lines+markers', name='Vol-Adjusted',
+            line=dict(color='#FF9800', width=2.5, dash='dashdot'),
+            marker=dict(size=6, symbol='star'),
+        ))
+        fig_nav.update_layout(
+            xaxis_title="초기인출률 (%)", yaxis_title="기말잔액 (초기=1 기준)", height=350,
+            xaxis=dict(ticksuffix='%'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(t=10, b=30, l=50, r=20),
+        )
+        st.plotly_chart(fig_nav, use_container_width=True)
+
+    with col_cw:
+        st.markdown("##### 누적인출금 (중앙값)")
+        fig_cw = go.Figure()
+        fig_cw.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['Fixed CW'],
+            mode='lines+markers', name='Fixed',
+            line=dict(color='#999', width=2, dash='dash'), marker=dict(size=4),
+        ))
+        fig_cw.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['Guard CW'],
+            mode='lines+markers', name='Guardrail',
+            line=dict(color=color, width=2.5), marker=dict(size=4),
+        ))
+        fig_cw.add_trace(go.Scatter(
+            x=sub['초기인출률'] * 100, y=sub['VolAdj CW'],
+            mode='lines+markers', name='Vol-Adjusted',
+            line=dict(color='#FF9800', width=2.5, dash='dashdot'),
+            marker=dict(size=6, symbol='star'),
+        ))
+        fig_cw.update_layout(
+            xaxis_title="초기인출률 (%)", yaxis_title="누적인출금 (초기=1 기준)", height=350,
+            xaxis=dict(ticksuffix='%'),
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+            margin=dict(t=10, b=30, l=50, r=20),
+        )
+        st.plotly_chart(fig_cw, use_container_width=True)
+
+    # ========================================
+    # 4. Vol-Adjusted 차이가 가장 큰 조건 Top 테이블
+    # ========================================
+    st.markdown("---")
+    st.subheader("2. Vol-Adjusted가 가장 효과적인 조건")
+
+    # --- 성공률 기준: vs Fixed ---
+    st.markdown("##### Vol-Adjusted vs Fixed: 성공률 차이가 가장 큰 조건")
+    _disp_vs_f_sr = comp_df.nlargest(10, '_va_vs_fixed_sr').copy()
+    _disp_vs_f_sr_show = pd.DataFrame({
+        '포트폴리오': _disp_vs_f_sr['포트폴리오'],
+        '초기인출률': _disp_vs_f_sr['_init_wr_pct'],
+        'Fixed': _disp_vs_f_sr['Fixed SR'].map(lambda x: f"{x*100:.1f}%"),
+        'Guardrail': _disp_vs_f_sr['Guard SR'].map(lambda x: f"{x*100:.1f}%"),
+        'Vol-Adjusted': _disp_vs_f_sr['VolAdj SR'].map(lambda x: f"{x*100:.1f}%"),
+        'VA−Fixed (%p)': _disp_vs_f_sr['_va_vs_fixed_sr'].round(1),
+        'VA−Guard (%p)': _disp_vs_f_sr['_va_vs_guard_sr'].round(1),
+    })
+    st.dataframe(_disp_vs_f_sr_show, width='stretch', hide_index=True)
+
+    # --- 성공률 기준: vs Guardrail ---
+    st.markdown("##### Vol-Adjusted vs Guardrail: 추가 성공률 개선이 가장 큰 조건")
+    _disp_vs_g_sr = comp_df.nlargest(10, '_va_vs_guard_sr').copy()
+    _disp_vs_g_sr_show = pd.DataFrame({
+        '포트폴리오': _disp_vs_g_sr['포트폴리오'],
+        '초기인출률': _disp_vs_g_sr['_init_wr_pct'],
+        'Guardrail': _disp_vs_g_sr['Guard SR'].map(lambda x: f"{x*100:.1f}%"),
+        'Vol-Adjusted': _disp_vs_g_sr['VolAdj SR'].map(lambda x: f"{x*100:.1f}%"),
+        'VA−Guard (%p)': _disp_vs_g_sr['_va_vs_guard_sr'].round(1),
+    })
+    st.dataframe(_disp_vs_g_sr_show, width='stretch', hide_index=True)
+
+    # --- 기말잔액 기준: vs Fixed ---
+    st.markdown("##### Vol-Adjusted vs Fixed: 기말잔액 차이가 가장 큰 조건")
+    _disp_nav = comp_df.nlargest(10, '_va_vs_fixed_nav').copy()
+    _disp_nav_show = pd.DataFrame({
+        '포트폴리오': _disp_nav['포트폴리오'],
+        '초기인출률': _disp_nav['_init_wr_pct'],
+        'Fixed NAV': _disp_nav['Fixed NAV'].round(2),
+        'Guard NAV': _disp_nav['Guard NAV'].round(2),
+        'VolAdj NAV': _disp_nav['VolAdj NAV'].round(2),
+        'VA−Fixed': _disp_nav['_va_vs_fixed_nav'].round(2),
+        'VA−Guard': _disp_nav['_va_vs_guard_nav'].round(2),
+    })
+    st.dataframe(_disp_nav_show, width='stretch', hide_index=True)
+
+    # --- 누적인출금 기준: vs Fixed ---
+    st.markdown("##### Vol-Adjusted vs Fixed: 누적인출금 차이가 가장 큰 조건")
+    st.caption("양수 = Vol-Adjusted가 더 많이 인출, 음수 = 더 적게 인출")
+    _disp_cw = comp_df.nlargest(10, '_va_vs_fixed_cw').copy()
+    _disp_cw_show = pd.DataFrame({
+        '포트폴리오': _disp_cw['포트폴리오'],
+        '초기인출률': _disp_cw['_init_wr_pct'],
+        'Fixed 인출금': _disp_cw['Fixed CW'].round(2),
+        'Guard 인출금': _disp_cw['Guard CW'].round(2),
+        'VolAdj 인출금': _disp_cw['VolAdj CW'].round(2),
+        'VA−Fixed': _disp_cw['_va_vs_fixed_cw'].round(2),
+        'VA−Guard': _disp_cw['_va_vs_guard_cw'].round(2),
+    })
+    st.dataframe(_disp_cw_show, width='stretch', hide_index=True)
+
+    # ========================================
+    # 5. Vol-Adjusted가 불리한 조건
+    # ========================================
+    st.markdown("---")
+    st.subheader("3. Vol-Adjusted가 불리하거나 차이 없는 조건")
+
+    st.markdown("##### Vol-Adjusted vs Guardrail: 성공률이 오히려 낮은 조건")
+    _worst_sr = comp_df.nsmallest(10, '_va_vs_guard_sr').copy()
+    _worst_sr_show = pd.DataFrame({
+        '포트폴리오': _worst_sr['포트폴리오'],
+        '초기인출률': _worst_sr['_init_wr_pct'],
+        'Fixed': _worst_sr['Fixed SR'].map(lambda x: f"{x*100:.1f}%"),
+        'Guardrail': _worst_sr['Guard SR'].map(lambda x: f"{x*100:.1f}%"),
+        'Vol-Adjusted': _worst_sr['VolAdj SR'].map(lambda x: f"{x*100:.1f}%"),
+        'VA−Guard (%p)': _worst_sr['_va_vs_guard_sr'].round(1),
+    })
+    st.dataframe(_worst_sr_show, width='stretch', hide_index=True)
+
+    # ========================================
+    # 6. GBM 이론 검증 (변동성별 효과)
+    # ========================================
+    _has_gbm = df_gbm is not None and len(df_gbm) > 0 and 'vol_adjusted' in df_gbm['strategy_type'].values
+    if _has_gbm:
+        st.markdown("---")
+        st.subheader("4. GBM 이론 검증: 변동성(σ)별 Vol-Adjusted 추가 효과")
+        st.caption("GBM 몬테카를로에서 σ가 클수록 Vol-Adjusted의 추가 효과가 커지는지 확인합니다.")
+
+        gbm_beta = beta if beta in df_gbm['beta'].unique() else df_gbm['beta'].mode().iloc[0]
+        gbm_mus = sorted(df_gbm['mu'].unique())
+        default_mu = 0.06 if 0.06 in gbm_mus else gbm_mus[len(gbm_mus)//2]
+
+        col_mu, _ = st.columns([1, 3])
+        with col_mu:
+            va_mu = st.select_slider("기대수익률 (μ)", options=gbm_mus,
+                                     value=default_mu, format_func=lambda x: f"{x*100:.0f}%",
+                                     key='va_gbm_mu')
+
+        gbm_band = FIXED_BAND
+        g_fixed = df_gbm[(df_gbm['mu'] == va_mu) & (df_gbm['beta'] == gbm_beta) &
+                         (df_gbm['strategy_type'] == 'fixed_baseline')]
+        g_guard = df_gbm[(df_gbm['mu'] == va_mu) & (df_gbm['beta'] == gbm_beta) &
+                         (df_gbm['strategy_type'] == 'dynamic') & (df_gbm['band'] == gbm_band)]
+        g_vol = df_gbm[(df_gbm['mu'] == va_mu) & (df_gbm['beta'] == gbm_beta) &
+                       (df_gbm['strategy_type'] == 'vol_adjusted') & (df_gbm['band'] == gbm_band)]
+
+        if len(g_fixed) > 0 and len(g_guard) > 0 and len(g_vol) > 0:
+            sigmas = sorted(g_fixed['sigma'].unique())
+            init_wrs_gbm = sorted(g_fixed['init_wr'].unique())
+
+            # 히트맵: Vol-Adjusted − Guardrail 성공률 차이 (y=σ, x=init_wr)
+            diff_matrix = np.full((len(init_wrs_gbm), len(sigmas)), np.nan)
+            for i_w, wr in enumerate(init_wrs_gbm):
+                for i_s, sig in enumerate(sigmas):
+                    gv = g_guard[(g_guard['init_wr'] == wr) & (g_guard['sigma'] == sig)]
+                    vv = g_vol[(g_vol['init_wr'] == wr) & (g_vol['sigma'] == sig)]
+                    if len(gv) > 0 and len(vv) > 0:
+                        diff_matrix[i_w, i_s] = (vv.iloc[0]['x_success_rate'] - gv.iloc[0]['x_success_rate']) * 100
+
+            fig_hm = go.Figure(data=go.Heatmap(
+                z=diff_matrix.T,
+                x=[f"{w*100:.0f}%" for w in init_wrs_gbm],
+                y=[f"{s*100:.0f}%" for s in sigmas],
+                colorscale='RdBu', zmid=0, zmin=-10, zmax=10,
+                text=np.where(np.isnan(diff_matrix.T), '', np.round(diff_matrix.T, 1).astype(str)),
+                texttemplate='%{text}',
+                colorbar=dict(title='%p'),
+                hovertemplate='인출률: %{x}<br>σ: %{y}<br>차이: %{z:.1f}%p<extra></extra>',
+            ))
+            fig_hm.update_layout(
+                title=f'성공률 차이 (Vol-Adjusted − Guardrail, μ={va_mu*100:.0f}%)',
+                xaxis_title='초기인출률', yaxis_title='변동성 (σ)',
+                height=450, margin=dict(t=40, b=30, l=60, r=20),
+            )
+            st.plotly_chart(fig_hm, use_container_width=True)
+            st.caption("파란색 = Vol-Adjusted 우위. 변동성이 높을수록 동적 밴드 조정의 효과가 커집니다.")
+
+            # 변동성별 성공률 곡선 (σ 선택)
+            default_sigmas = [s for s in [0.06, 0.10, 0.14] if s in sigmas]
+            if not default_sigmas:
+                default_sigmas = sigmas[:3]
+            sel_sigmas = st.multiselect("변동성(σ) 선택", options=sigmas,
+                                        default=default_sigmas,
+                                        format_func=lambda x: f"{x*100:.0f}%",
+                                        key='va_gbm_sigmas')
+
+            if sel_sigmas:
+                fig_curve_gbm = go.Figure()
+                colors_sigma = ['#2196F3', '#E91E63', '#4CAF50', '#FF9800', '#9C27B0', '#00BCD4']
+                for idx, sig in enumerate(sorted(sel_sigmas)):
+                    c = colors_sigma[idx % len(colors_sigma)]
+                    lbl = f"σ={sig*100:.0f}%"
+                    # Fixed
+                    fd = g_fixed[g_fixed['sigma'] == sig].sort_values('init_wr')
+                    if len(fd) > 0:
+                        fig_curve_gbm.add_trace(go.Scatter(
+                            x=fd['init_wr'] * 100, y=fd['x_success_rate'],
+                            mode='lines', name=f'{lbl} Fixed',
+                            line=dict(color=c, width=1, dash='dot'),
+                            legendgroup=lbl, showlegend=True,
+                        ))
+                    # Guardrail
+                    gd = g_guard[g_guard['sigma'] == sig].sort_values('init_wr')
+                    if len(gd) > 0:
+                        fig_curve_gbm.add_trace(go.Scatter(
+                            x=gd['init_wr'] * 100, y=gd['x_success_rate'],
+                            mode='lines', name=f'{lbl} Guard',
+                            line=dict(color=c, width=2, dash='dash'),
+                            legendgroup=lbl, showlegend=True,
+                        ))
+                    # Vol-Adjusted
+                    vd = g_vol[g_vol['sigma'] == sig].sort_values('init_wr')
+                    if len(vd) > 0:
+                        fig_curve_gbm.add_trace(go.Scatter(
+                            x=vd['init_wr'] * 100, y=vd['x_success_rate'],
+                            mode='lines+markers', name=f'{lbl} VolAdj',
+                            line=dict(color=c, width=2.5),
+                            marker=dict(size=5, symbol='star'),
+                            legendgroup=lbl, showlegend=True,
+                        ))
+
+                fig_curve_gbm.update_layout(
+                    xaxis_title="초기인출률 (%)", yaxis_title="목표달성률", height=450,
+                    xaxis=dict(ticksuffix='%'), yaxis=dict(tickformat='.0%'),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                    margin=dict(t=10, b=30, l=50, r=20),
+                )
+                st.plotly_chart(fig_curve_gbm, use_container_width=True)
+                st.caption("점선=Fixed, 파선=Guardrail, 실선+별=Vol-Adjusted. 같은 색상은 동일 σ.")
+
+    # ========================================
+    # 7. 종합 분석
+    # ========================================
+    st.markdown("---")
+    st.subheader("5. 종합 분석")
+
+    # 통계 요약 계산
+    avg_va_vs_f = comp_df['_va_vs_fixed_sr'].mean()
+    avg_va_vs_g = comp_df['_va_vs_guard_sr'].mean()
+    max_va_vs_g = comp_df['_va_vs_guard_sr'].max()
+    pct_va_better = (comp_df['_va_vs_guard_sr'] > 0.05).sum() / len(comp_df) * 100  # >0.05%p 개선
+
+    # 고변동성 포트폴리오 (target_risk 높은 것)에서의 효과
+    high_risk_ports = [p for p in portfolios if float(p.replace('Port_','').replace('%','')) >= 7.0]
+    low_risk_ports = [p for p in portfolios if float(p.replace('Port_','').replace('%','')) <= 5.0]
+    avg_high = comp_df[comp_df['포트폴리오'].isin(high_risk_ports)]['_va_vs_guard_sr'].mean() if high_risk_ports else 0
+    avg_low = comp_df[comp_df['포트폴리오'].isin(low_risk_ports)]['_va_vs_guard_sr'].mean() if low_risk_ports else 0
+
+    st.markdown(_finding_box(
+        f"<b>1. Vol-Adjusted vs Fixed 비교</b><br>"
+        f"• 전체 {len(comp_df)}개 조합 평균, Vol-Adjusted는 Fixed 대비 "
+        f"목표달성률이 <b>{avg_va_vs_f:+.1f}%p</b> 차이납니다.<br>"
+        f"• Guardrail의 기본 효과(밴드 고정)에 변동성 조정을 더한 것이므로, "
+        f"Fixed 대비 개선은 Guardrail 효과를 포함합니다."
+    ), unsafe_allow_html=True)
+
+    st.markdown(_finding_box(
+        f"<b>2. Vol-Adjusted vs Guardrail 추가 효과</b><br>"
+        f"• 기존 Guardrail 대비 평균 <b>{avg_va_vs_g:+.2f}%p</b>, "
+        f"최대 <b>{max_va_vs_g:+.1f}%p</b> 추가 개선.<br>"
+        f"• 전체 조합 중 <b>{pct_va_better:.0f}%</b>에서 Guardrail 대비 성공률이 개선되었습니다."
+    ), unsafe_allow_html=True)
+
+    st.markdown(_finding_box(
+        f"<b>3. 포트폴리오 위험 수준별 효과</b><br>"
+        f"• 고위험 포트폴리오({', '.join(high_risk_ports)}): 평균 <b>{avg_high:+.2f}%p</b> 추가 개선<br>"
+        f"• 저위험 포트폴리오({', '.join(low_risk_ports)}): 평균 <b>{avg_low:+.2f}%p</b> 추가 개선<br>"
+        f"• 포트폴리오 자체 변동성이 클수록 동적 밴드 조정의 실익이 커집니다."
+    ), unsafe_allow_html=True)
+
+    st.markdown(_finding_box(
+        f"<b>4. 실무적 시사점</b><br>"
+        f"• Vol-Adjusted는 <b>시장 상황에 따라 자동으로 밴드를 조절</b>하므로, "
+        f"운용역의 주관적 판단 없이 체계적 리스크 관리가 가능합니다.<br>"
+        f"• 고변동성 구간에서 인출 축소를 강화하여 자본 보전 효과를 극대화하면서, "
+        f"저변동성 구간에서는 불필요한 인출 제한을 줄여 수익자 만족도를 유지합니다.<br>"
+        f"• 기존 Guardrail(±{FIXED_BAND*100:.0f}% 고정) 대비 추가 구현 비용이 낮으면서도 "
+        f"고변동성 환경에서 체계적인 개선을 제공합니다."
+    ), unsafe_allow_html=True)
+
+
+# ============================================================================
 # Tab 4: Guardrail Band 최적화
 # ============================================================================
 
@@ -2487,11 +3221,12 @@ def main():
     # 탭 생성 (6개, 사이드바 연동)
     # ========================================
 
-    tab_assume, tab1, tab_dv, tab3, tab4, tab_findings = st.tabs([
+    tab_assume, tab1, tab_dv, tab3, tab_va, tab4, tab_findings = st.tabs([
         "가정",
         "Guardrail 효과",
         "시뮬레이션",
         "데이터 검증",
+        "Vol-Adjusted",
         "Band 최적화",
         "분석결과",
     ])
@@ -2507,6 +3242,9 @@ def main():
 
     with tab3:
         render_tab3_historical(df_all, beta, path_method, df_gbm=df_gbm)
+
+    with tab_va:
+        render_tab_vol_adjusted(df_all, beta, path_method, df_gbm=df_gbm)
 
     with tab4:
         render_tab4_optimization(df_all, beta, path_method, df_gbm=df_gbm)

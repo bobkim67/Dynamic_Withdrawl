@@ -17,7 +17,7 @@ except ImportError:
     def tqdm(iterable, **kwargs):
         return iterable
 
-from withdrawal_backtest import DataPreprocessor
+from withdrawal_backtest import DataPreprocessor, PORTFOLIOS
 from engine import (
     daily_to_monthly_returns,
     generate_paths_rolling,
@@ -132,14 +132,14 @@ def load_and_generate_paths():
         # Combined: rolling + bootstrap 합산
         combined_paths = rolling_paths + bootstrap_paths
 
-        # 전체 표본 연환산 변동성 (vol_adjusted 전략용)
-        sigma_full = float(np.std(monthly_returns, ddof=1) * np.sqrt(12))
+        # 포트폴리오 목표위험을 sigma_target으로 사용 (% → 소수)
+        sigma_target = PORTFOLIOS[portfolio_name]['target_risk'] / 100
 
         portfolio_paths[portfolio_name] = {
             'rolling': rolling_paths,
             'bootstrap': bootstrap_paths,
             'combined': combined_paths,
-            'sigma_target': sigma_full,
+            'sigma_target': sigma_target,
         }
 
     print(f"\n[OK] Path 생성 완료")
