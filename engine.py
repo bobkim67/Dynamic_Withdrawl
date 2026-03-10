@@ -178,6 +178,11 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
                                  adj_dn: float = -0.05,
                                  beta: float = 0.5,
                                  W0: float = 100.0,
+                                 vol_adj: bool = False,
+                                 sigma_target: float = 0.0,
+                                 vol_lookback: int = 12,
+                                 vol_floor: float = 0.5,
+                                 vol_cap: float = 2.0,
                                  debug: bool = False) -> dict:
     """
     월간 수익률 path에 인출 전략을 적용하여 시뮬레이션
@@ -215,6 +220,16 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         terminal 실패 기준 (W_T < beta * W0이면 실패)
     W0 : float
         초기 자산
+    vol_adj : bool
+        변동성 조정 ON/OFF (True일 때 sigma_target 필수)
+    sigma_target : float
+        목표 변동성 (연율). Historical→전체 표본 σ, GBM→생성 파라미터 σ
+    vol_lookback : int
+        실현 변동성 추정 window (월, 기본 12)
+    vol_floor : float
+        밴드 축소 하한 배수 (기본 0.5)
+    vol_cap : float
+        밴드 확대 상한 배수 (기본 2.0)
     debug : bool
         True일 때 중간 계산 과정을 DataFrame으로 반환
 
@@ -276,18 +291,29 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         else:
             withdraw_adj = base
 
+        # Step 3.5: 변동성 밴드 조정 (vol_adj=True일 때)
+        if vol_adj and sigma_target > 0 and t >= vol_lookback:
+            recent = path_returns[t - vol_lookback + 1 : t + 1]
+            sigma_realized = np.std(recent, ddof=1) * np.sqrt(12)
+            sigma_ratio = np.clip(sigma_realized / sigma_target, vol_floor, vol_cap)
+            adj_upper = target_ratio * (1 + band * sigma_ratio)
+            adj_lower = target_ratio * (1 - band * sigma_ratio)
+        else:
+            adj_upper = upper_ratio
+            adj_lower = lower_ratio
+
         # Step 4: Guardrail — W/NAV 비율 밴드 적용
         cap_applied = 'None'
         if W_t > 0:
             ratio = withdraw_adj / W_t     # W/NAV 월비율
 
-            if ratio > upper_ratio:
+            if ratio > adj_upper:
                 # 비율 과다 → 인출 축소 (자본 보전)
-                withdraw_final = upper_ratio * W_t
+                withdraw_final = adj_upper * W_t
                 cap_applied = 'Upper'
-            elif ratio < lower_ratio:
+            elif ratio < adj_lower:
                 # 비율 과소 → 인출 확대 (수익 향유)
-                withdraw_final = lower_ratio * W_t
+                withdraw_final = adj_lower * W_t
                 cap_applied = 'Lower'
             else:
                 withdraw_final = withdraw_adj
@@ -317,8 +343,8 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
                 'Prev_Withdrawal': base,
                 'Adj_Withdrawal': withdraw_adj,
                 'W_NAV_Ratio': ratio,
-                'Upper_Ratio': upper_ratio,
-                'Lower_Ratio': lower_ratio,
+                'Upper_Ratio': adj_upper,
+                'Lower_Ratio': adj_lower,
                 'Cap_Applied': cap_applied,
                 'Final_Withdrawal': withdraw_final,
                 'NAV_After_Withdrawal': W_t,
@@ -363,7 +389,12 @@ def evaluate_strategy(paths: List[np.ndarray],
                       adj_up: float = 0.05,
                       adj_dn: float = -0.05,
                       beta: float = 0.5,
-                      W0: float = 100.0) -> dict:
+                      W0: float = 100.0,
+                      vol_adj: bool = False,
+                      sigma_target: float = 0.0,
+                      vol_lookback: int = 12,
+                      vol_floor: float = 0.5,
+                      vol_cap: float = 2.0) -> dict:
     """
     여러 path에 대해 인출 전략을 시뮬레이션하고 결과를 집계
 
@@ -404,6 +435,11 @@ def evaluate_strategy(paths: List[np.ndarray],
             adj_dn=adj_dn,
             beta=beta,
             W0=W0,
+            vol_adj=vol_adj,
+            sigma_target=sigma_target,
+            vol_lookback=vol_lookback,
+            vol_floor=vol_floor,
+            vol_cap=vol_cap,
             debug=False
         )
 
@@ -610,12 +646,14 @@ def generate_paths_gbm(mu, sigma, n_paths=1000, T_months=120, seed=42):
     return monthly_returns
 
 
-def simulate_withdrawal_on_paths_vectorized(paths_matrix, init_wr, band, W0=100.0):
+def simulate_withdrawal_on_paths_vectorized(paths_matrix, init_wr, band, W0=100.0,
+                                              vol_adj=False, sigma_target=0.0,
+                                              vol_lookback=12, vol_floor=0.5, vol_cap=2.0):
     """
     벡터화된 인출 시뮬레이션 (다수 경로 동시 처리)
 
     기존 simulate_withdrawal_on_path와 동일 로직을 numpy 행렬 연산으로 벡터화.
-    매월 순서: [수익률 적용 → base 인출 → guardrail 캡 → 인출 실행]
+    매월 순서: [수익률 적용 → base 인출 → (변동성 밴드 조정) → guardrail 캡 → 인출 실행]
     adj_on 미지원 (기존 grid_search에서도 adj_on=True 제거됨)
 
     Parameters
@@ -628,6 +666,16 @@ def simulate_withdrawal_on_paths_vectorized(paths_matrix, init_wr, band, W0=100.
         guardrail 밴드 (99.0이면 사실상 fixed)
     W0 : float
         초기 자산
+    vol_adj : bool
+        변동성 조정 ON/OFF
+    sigma_target : float
+        목표 변동성 (연율)
+    vol_lookback : int
+        실현 변동성 추정 window (월)
+    vol_floor : float
+        밴드 축소 하한 배수
+    vol_cap : float
+        밴드 확대 상한 배수
 
     Returns
     -------
@@ -658,18 +706,29 @@ def simulate_withdrawal_on_paths_vectorized(paths_matrix, init_wr, band, W0=100.
         # Step 2: 인출 시도액 = 이전 달 인출액 유지
         withdraw = prev_withdraw.copy()
 
+        # Step 3.5: 변동성 밴드 조정 (vol_adj=True일 때)
+        if vol_adj and sigma_target > 0 and t >= vol_lookback:
+            window = paths_matrix[:, t - vol_lookback + 1 : t + 1]  # (n_paths, vol_lookback)
+            sigma_realized = np.std(window, axis=1, ddof=1) * np.sqrt(12)  # (n_paths,)
+            sigma_ratio = np.clip(sigma_realized / sigma_target, vol_floor, vol_cap)
+            cur_upper = target_ratio * (1 + band * sigma_ratio)  # (n_paths,)
+            cur_lower = target_ratio * (1 - band * sigma_ratio)  # (n_paths,)
+        else:
+            cur_upper = upper_ratio  # scalar broadcast
+            cur_lower = lower_ratio
+
         # Step 4: Guardrail — W/NAV 비율 밴드 적용
         alive = W > 0
         safe_W = np.where(alive, W, 1.0)
         ratio = np.where(alive, withdraw / safe_W, 0.0)
 
         # Upper: 비율 과다 → 인출 축소
-        upper_mask = alive & (ratio > upper_ratio)
-        withdraw = np.where(upper_mask, upper_ratio * W, withdraw)
+        upper_mask = alive & (ratio > cur_upper)
+        withdraw = np.where(upper_mask, cur_upper * W, withdraw)
 
         # Lower: 비율 과소 → 인출 확대
-        lower_mask = alive & (ratio < lower_ratio)
-        withdraw = np.where(lower_mask, lower_ratio * W, withdraw)
+        lower_mask = alive & (ratio < cur_lower)
+        withdraw = np.where(lower_mask, cur_lower * W, withdraw)
 
         # 파산 경로: 인출 0
         withdraw = np.where(alive, withdraw, 0.0)
@@ -1321,6 +1380,88 @@ if __name__ == "__main__":
         print(f"  Beta={beta_val}: 성공률={r_eval['x_success_rate']*100:.1f}%, "
               f"파산률={r_eval['p_ruin']*100:.2f}%, "
               f"누적인출={r_eval['y_cum_withdraw_median']:.1f}")
+
+    # ========================================
+    # 9. vol_adj 검증
+    # ========================================
+
+    print("\n" + "=" * 70)
+    print("Volatility-Adjusted Guardrail 검증")
+    print("=" * 70)
+
+    # 테스트 8: vol_adj=False → 기존 결과와 100% 일치
+    print("\n[테스트 8] vol_adj=False → 기존 결과 동일 확인")
+    print("-" * 70)
+
+    result_no_vol = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05, band=0.15, adj_on=False, W0=100.0,
+        vol_adj=False, sigma_target=0.10,
+    )
+    nav_match = np.allclose(result_no_vol['W_series'], result1['W_series'], atol=1e-10)
+    cum_match = abs(result_no_vol['cum_withdraw'] - result1['cum_withdraw']) < 1e-10
+    print(f"  NAV 시계열 일치: {'[OK]' if nav_match else '[FAIL]'}")
+    print(f"  누적인출 일치: {'[OK]' if cum_match else '[FAIL]'}")
+
+    # 테스트 9: vol_adj=True → 결과가 달라지는지 확인
+    print("\n[테스트 9] vol_adj=True → 변동성 조정 효과 확인")
+    print("-" * 70)
+
+    sigma_full = np.std(monthly_returns, ddof=1) * np.sqrt(12)
+    print(f"  전체 표본 연환산 σ: {sigma_full*100:.2f}%")
+
+    result_vol = simulate_withdrawal_on_path(
+        path_returns=test_path,
+        init_wr=0.05, band=0.15, adj_on=False, W0=100.0,
+        vol_adj=True, sigma_target=sigma_full, vol_lookback=12,
+    )
+    nav_differs = not np.allclose(result_vol['W_series'], result1['W_series'], atol=1e-6)
+    print(f"  vol_adj=True 결과가 기존과 다름: {'[OK]' if nav_differs else '[WARN] 동일 (σ_target ≈ σ_realized이면 가능)'}")
+    print(f"  기존 누적인출: {result1['cum_withdraw']:.2f}")
+    print(f"  vol_adj 누적인출: {result_vol['cum_withdraw']:.2f}")
+    print(f"  기존 기말NAV: {result1['terminal_nav']:.2f}")
+    print(f"  vol_adj 기말NAV: {result_vol['terminal_nav']:.2f}")
+
+    # 테스트 10: 벡터화 vs scalar vol_adj 일치
+    print("\n[테스트 10] 벡터화 vs Scalar vol_adj 일치 확인")
+    print("-" * 70)
+
+    test_paths_vol = generate_paths_gbm(mu=0.07, sigma=0.12, n_paths=10, T_months=24, seed=123)
+    sigma_t = 0.12
+
+    vol_test_params = [
+        {'init_wr': 0.05, 'band': 0.10},
+        {'init_wr': 0.08, 'band': 0.15},
+    ]
+
+    all_vol_match = True
+    for params in vol_test_params:
+        iw, bd = params['init_wr'], params['band']
+
+        # 벡터화
+        vec_r = simulate_withdrawal_on_paths_vectorized(
+            test_paths_vol, iw, bd, W0=100.0,
+            vol_adj=True, sigma_target=sigma_t, vol_lookback=12,
+        )
+
+        max_d_W, max_d_cum = 0.0, 0.0
+        for i in range(10):
+            sc_r = simulate_withdrawal_on_path(
+                path_returns=test_paths_vol[i], init_wr=iw, band=bd,
+                adj_on=False, beta=0.5, W0=100.0,
+                vol_adj=True, sigma_target=sigma_t, vol_lookback=12,
+            )
+            max_d_W = max(max_d_W, abs(vec_r['W_terminal'][i] - sc_r['terminal_nav']))
+            max_d_cum = max(max_d_cum, abs(vec_r['cum_withdraw'][i] - sc_r['cum_withdraw']))
+
+        match = max_d_W < 1e-8 and max_d_cum < 1e-8
+        if not match:
+            all_vol_match = False
+        status = "[OK]" if match else "[FAIL]"
+        print(f"  {status} init_wr={iw*100:.0f}%, band=±{bd*100:.0f}%: "
+              f"max_diff(W)={max_d_W:.2e}, max_diff(cum)={max_d_cum:.2e}")
+
+    print(f"\n{'[OK] vol_adj 벡터화 검증 통과' if all_vol_match else '[FAIL] vol_adj 벡터화 검증 실패'}")
 
     print("\n" + "=" * 70)
     print("검증 완료")

@@ -54,6 +54,8 @@ CONFIG = {
         {'adj_on': False, 'fixed_baseline': True},
         # Guardrail만 적용 (보정 없음)
         {'adj_on': False},
+        # Volatility-Adjusted Guardrail (밴드 폭을 실현 변동성으로 동적 조정)
+        {'adj_on': False, 'vol_adj': True},
     ],
 
     # 다중 beta 값 (성공 기준 기말잔액 비율)
@@ -130,10 +132,14 @@ def load_and_generate_paths():
         # Combined: rolling + bootstrap 합산
         combined_paths = rolling_paths + bootstrap_paths
 
+        # 전체 표본 연환산 변동성 (vol_adjusted 전략용)
+        sigma_full = float(np.std(monthly_returns, ddof=1) * np.sqrt(12))
+
         portfolio_paths[portfolio_name] = {
             'rolling': rolling_paths,
             'bootstrap': bootstrap_paths,
             'combined': combined_paths,
+            'sigma_target': sigma_full,
         }
 
     print(f"\n[OK] Path 생성 완료")
@@ -141,7 +147,8 @@ def load_and_generate_paths():
         n_rolling = len(portfolio_paths[portfolio_name]['rolling'])
         n_bootstrap = len(portfolio_paths[portfolio_name]['bootstrap'])
         n_combined = len(portfolio_paths[portfolio_name]['combined'])
-        print(f"  {portfolio_name}: Rolling {n_rolling}개, Bootstrap {n_bootstrap}개, Combined {n_combined}개")
+        sigma_t = portfolio_paths[portfolio_name]['sigma_target']
+        print(f"  {portfolio_name}: Rolling {n_rolling}개, Bootstrap {n_bootstrap}개, Combined {n_combined}개, σ={sigma_t*100:.2f}%")
 
     return portfolio_paths
 
@@ -175,10 +182,11 @@ def run_grid_search(portfolio_paths):
     betas = CONFIG['betas']
     path_methods = CONFIG['path_methods'] + ['combined']  # rolling, bootstrap, combined
 
-    # fixed_baseline과 dynamic 조합 수 계산
+    # fixed_baseline / dynamic / vol_adjusted 조합 수 계산
     n_fixed_baseline = len(init_wr_list) * 1  # band=99.0 하나만
-    n_dynamic = len(init_wr_list) * len(band_list) * (len(adj_configs) - 1)  # fixed_baseline 제외
-    n_combinations = n_fixed_baseline + n_dynamic
+    n_dynamic = len(init_wr_list) * len(band_list) * 1  # adj_on=False, no vol_adj
+    n_vol_adjusted = len(init_wr_list) * len(band_list) * 1  # vol_adj=True
+    n_combinations = n_fixed_baseline + n_dynamic + n_vol_adjusted
 
     n_portfolios = len(CONFIG['portfolios'])
     n_path_methods = len(path_methods)
@@ -190,7 +198,8 @@ def run_grid_search(portfolio_paths):
     print(f"Beta 값: {betas}")
     print(f"파라미터 조합: {n_combinations}개")
     print(f"  - Fixed baseline: {n_fixed_baseline}개 (init_wr {len(init_wr_list)} × band 1)")
-    print(f"  - Dynamic: {n_dynamic}개 (init_wr {len(init_wr_list)} × band {len(band_list)} × adj_config {len(adj_configs)-1})")
+    print(f"  - Dynamic: {n_dynamic}개 (init_wr {len(init_wr_list)} × band {len(band_list)})")
+    print(f"  - Vol-Adjusted: {n_vol_adjusted}개 (init_wr {len(init_wr_list)} × band {len(band_list)})")
     print(f"총 실행 수: {total_runs:,}개 ({n_combinations} × {n_portfolios} portfolios × {n_path_methods} paths × {n_betas} betas)")
 
     estimated_time_sec = total_runs * 0.01
@@ -210,6 +219,9 @@ def run_grid_search(portfolio_paths):
                 method_start_time = time.time()
                 n_processed = 0
 
+                # sigma_target for vol_adjusted
+                sigma_target = portfolio_paths[portfolio_name]['sigma_target']
+
                 # 파라미터 조합 반복
                 for init_wr in init_wr_list:
                     for adj_config in adj_configs:
@@ -217,6 +229,9 @@ def run_grid_search(portfolio_paths):
                         if adj_config.get('fixed_baseline', False):
                             band_list_to_use = [99.0]  # band=99.0만 사용
                             strategy_type = 'fixed_baseline'
+                        elif adj_config.get('vol_adj', False):
+                            band_list_to_use = band_list
+                            strategy_type = 'vol_adjusted'
                         else:
                             band_list_to_use = band_list
                             strategy_type = 'dynamic'
@@ -235,7 +250,9 @@ def run_grid_search(portfolio_paths):
                                     adj_up=adj_config.get('adj_up', 0.05),
                                     adj_dn=adj_config.get('adj_dn', -0.05),
                                     beta=beta,
-                                    W0=CONFIG['W0']
+                                    W0=CONFIG['W0'],
+                                    vol_adj=adj_config.get('vol_adj', False),
+                                    sigma_target=sigma_target if adj_config.get('vol_adj', False) else 0.0,
                                 )
 
                                 # 메타데이터 추가
@@ -243,6 +260,7 @@ def run_grid_search(portfolio_paths):
                                 result['path_method'] = path_method
                                 result['strategy_type'] = strategy_type
                                 result['beta'] = beta
+                                result['vol_adj'] = adj_config.get('vol_adj', False)
 
                                 all_results.append(result)
                                 n_processed += 1
@@ -371,6 +389,27 @@ def save_results(all_results):
                 else:
                     print(f"  [Dynamic]         최적 전략 없음 (제약 조건 불만족)")
 
+                # Vol-Adjusted 최적해
+                subset_vol = [r for r in all_results
+                             if r['portfolio'] == portfolio_name and r['path_method'] == path_method
+                             and r['beta'] == beta and r['strategy_type'] == 'vol_adjusted']
+
+                optimal_vol = select_optimal(subset_vol, x_min=CONFIG['x_min'], q_ruin=CONFIG['q_ruin'])
+
+                if optimal_vol:
+                    for r in all_results:
+                        if (r['portfolio'] == portfolio_name and r['path_method'] == path_method
+                            and r['beta'] == beta and r['strategy_type'] == 'vol_adjusted'
+                            and r['init_wr'] == optimal_vol['init_wr']
+                            and r['band'] == optimal_vol['band']):
+                            r['is_optimal'] = True
+
+                    print(f"  [Vol-Adjusted]    init_wr={optimal_vol['init_wr']*100:4.1f}%, "
+                          f"band={optimal_vol['band']*100:2.0f}%, "
+                          f"누적인출={optimal_vol['y_cum_withdraw_median']:5.1f}")
+                else:
+                    print(f"  [Vol-Adjusted]    최적 전략 없음 (제약 조건 불만족)")
+
     # 전체 결과 저장 (pkl)
     print("\n[파일 저장]")
 
@@ -398,6 +437,7 @@ def save_results(all_results):
             'p5_monthly_income': r['p5_monthly_income'],
             'terminal_nav_median': r.get('terminal_nav_median', None),
             'terminal_nav_mean': r.get('terminal_nav_mean', None),
+            'vol_adj': r.get('vol_adj', False),
             'is_frontier': r.get('is_frontier', False),
             'is_optimal': r.get('is_optimal', False),
         }
