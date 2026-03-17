@@ -1,0 +1,90 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>인출 메커니즘</title>
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+* { box-sizing: border-box; }
+body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; margin:0; padding:0; background:#eef0f4; color:#222; font-size:15px; }
+.slide { width:1280px; min-height:720px; margin:20px auto; background:white;
+    box-shadow:0 4px 24px rgba(0,0,0,0.10); border-radius:8px; overflow:hidden; position:relative; }
+.slide-hd { background:linear-gradient(135deg,#0d1b4a 0%,#283593 100%);
+    color:white; padding:30px 52px 22px; }
+.slide-hd h1 { margin:0 0 6px; font-size:30px; font-weight:800; }
+.slide-hd .sub { font-size:15px; color:rgba(255,255,255,0.65); margin:0; }
+.slide-bd { padding:28px 52px 16px; }
+.slide-ft { position:absolute; bottom:0; left:0; right:0; padding:10px 52px;
+    font-size:11px; color:#aaa; border-top:1px solid #eee; background:#fafafa;
+    display:flex; justify-content:space-between; }
+.pn { font-weight:700; color:#1a237e; }
+.callout { background:#e8eaf6; border-left:4px solid #3949ab;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#1a237e; line-height:1.7; }
+.warn { background:#fff3e0; border-left:4px solid #f57c00;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#e65100; line-height:1.7; }
+.disc { font-size:11px; color:#aaa; line-height:1.5; margin-top:12px; padding-top:10px; border-top:1px solid #eee; }
+table.dt { border-collapse:collapse; width:100%; font-size:14px; }
+table.dt th { background:#37474F; color:white; padding:11px 16px; font-weight:700; text-align:center; }
+table.dt td { padding:11px 16px; text-align:center; border-bottom:1px solid #eee; }
+table.dt .rl { text-align:left; font-weight:600; color:#555; background:#f8f9fa; }
+</style>
+</head><body>
+<div class="slide"><div class="slide-hd"><h1>인출 메커니즘</h1><p class="sub">초기 1.2억원 / 목표 월 100만원 / Guardrail Band +-5%</p></div>
+<div class="slide-bd">
+<div style="max-width:1100px;margin:0 auto">
+
+<div style="background:#f8f9fa;border-radius:10px;padding:24px 32px;margin-bottom:20px">
+<h3 style="font-size:18px;color:#1a237e;margin:0 0 16px">인출 판단 흐름</h3>
+<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:15px">
+  <div style="background:#1565C0;color:white;padding:10px 18px;border-radius:8px;font-weight:700">매월 수익률 적용</div>
+  <div style="font-size:24px;color:#ccc">&#x27A1;</div>
+  <div style="background:#37474F;color:white;padding:10px 18px;border-radius:8px;font-weight:700">전월 인출액으로 인출 시도</div>
+  <div style="font-size:24px;color:#ccc">&#x27A1;</div>
+  <div style="background:#FF6F00;color:white;padding:10px 18px;border-radius:8px;font-weight:700">인출액/NAV 비율 체크</div>
+  <div style="font-size:24px;color:#ccc">&#x27A1;</div>
+  <div style="background:#2E7D32;color:white;padding:10px 18px;border-radius:8px;font-weight:700">밴드 내면 유지<br>밴드 밖이면 조정</div>
+</div>
+</div>
+
+<div style="display:flex;gap:16px">
+  <div style="flex:1;border:2px solid #4CAF50;border-radius:10px;padding:20px">
+    <h4 style="color:#2E7D32;margin:0 0 12px;font-size:16px">Case 1: 밴드 내 (인출 유지)</h4>
+    <table style="width:100%;font-size:14px;border-collapse:collapse">
+      <tr><td style="padding:4px 0;color:#777">NAV</td><td style="text-align:right;font-weight:700">1.0억원</td></tr>
+      <tr><td style="padding:4px 0;color:#777">전월 인출액</td><td style="text-align:right">100만원</td></tr>
+      <tr><td style="padding:4px 0;color:#777">인출/NAV 비율</td><td style="text-align:right">1.00%</td></tr>
+      <tr><td style="padding:4px 0;color:#777">밴드 범위</td><td style="text-align:right">0.9500% ~ 1.0500%</td></tr>
+      <tr style="border-top:2px solid #4CAF50"><td style="padding:8px 0;color:#2E7D32;font-weight:800">결과: 인출액</td>
+          <td style="text-align:right;font-weight:800;color:#2E7D32;font-size:18px">100만원</td></tr>
+    </table>
+  </div>
+
+  <div style="flex:1;border:2px solid #EF5350;border-radius:10px;padding:20px">
+    <h4 style="color:#c62828;margin:0 0 12px;font-size:16px">Case 2: 상한 초과 (인출 축소)</h4>
+    <table style="width:100%;font-size:14px;border-collapse:collapse">
+      <tr><td style="padding:4px 0;color:#777">NAV</td><td style="text-align:right;font-weight:700">8,000만원 <span style="color:red">&#x25BC;33%</span></td></tr>
+      <tr><td style="padding:4px 0;color:#777">전월 인출액</td><td style="text-align:right">100만원</td></tr>
+      <tr><td style="padding:4px 0;color:#777">인출/NAV 비율</td><td style="text-align:right;color:red;font-weight:700">1.25% (상한 초과)</td></tr>
+      <tr><td style="padding:4px 0;color:#777">밴드 상한</td><td style="text-align:right">1.0500%</td></tr>
+      <tr style="border-top:2px solid #EF5350"><td style="padding:8px 0;color:#c62828;font-weight:800">결과: 인출액</td>
+          <td style="text-align:right;font-weight:800;color:#c62828;font-size:18px">84만원 &#x25BC;</td></tr>
+    </table>
+  </div>
+
+  <div style="flex:1;border:2px solid #1565C0;border-radius:10px;padding:20px">
+    <h4 style="color:#0d47a1;margin:0 0 12px;font-size:16px">Case 3: 하한 미달 (인출 확대)</h4>
+    <table style="width:100%;font-size:14px;border-collapse:collapse">
+      <tr><td style="padding:4px 0;color:#777">NAV</td><td style="text-align:right;font-weight:700">1.5억원 <span style="color:green">&#x25B2;25%</span></td></tr>
+      <tr><td style="padding:4px 0;color:#777">전월 인출액</td><td style="text-align:right">100만원</td></tr>
+      <tr><td style="padding:4px 0;color:#777">인출/NAV 비율</td><td style="text-align:right;color:#1565C0;font-weight:700">0.67% (하한 미달)</td></tr>
+      <tr><td style="padding:4px 0;color:#777">밴드 하한</td><td style="text-align:right">0.9500%</td></tr>
+      <tr style="border-top:2px solid #1565C0"><td style="padding:8px 0;color:#0d47a1;font-weight:800">결과: 인출액</td>
+          <td style="text-align:right;font-weight:800;color:#0d47a1;font-size:18px">142만원 &#x25B2;</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="warn" style="margin-top:16px">
+  <b>유의:</b> 목표 인출률 연 12% (월 100만원) 기준, 시장 상황에 따라 실제 인출액이 변동합니다.
+  과거 백테스트 평균 실효인출률은 약 11.4% 입니다.
+</div>
+</div>
+<div class="disc">본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발생할 수 있습니다. 모든 수치는 명목 기준(인플레이션 미조정)이며, 시뮬레이션 기간은 10년입니다.</div></div>
+<div class="slide-ft"><span>본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발...</span><span class="pn">4 / 11</span></div>
+</div></body></html>

@@ -1,0 +1,55 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>상품 파라미터</title>
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+* { box-sizing: border-box; }
+body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; margin:0; padding:0; background:#eef0f4; color:#222; font-size:15px; }
+.slide { width:1280px; min-height:720px; margin:20px auto; background:white;
+    box-shadow:0 4px 24px rgba(0,0,0,0.10); border-radius:8px; overflow:hidden; position:relative; }
+.slide-hd { background:linear-gradient(135deg,#0d1b4a 0%,#283593 100%);
+    color:white; padding:30px 52px 22px; }
+.slide-hd h1 { margin:0 0 6px; font-size:30px; font-weight:800; }
+.slide-hd .sub { font-size:15px; color:rgba(255,255,255,0.65); margin:0; }
+.slide-bd { padding:28px 52px 16px; }
+.slide-ft { position:absolute; bottom:0; left:0; right:0; padding:10px 52px;
+    font-size:11px; color:#aaa; border-top:1px solid #eee; background:#fafafa;
+    display:flex; justify-content:space-between; }
+.pn { font-weight:700; color:#1a237e; }
+.callout { background:#e8eaf6; border-left:4px solid #3949ab;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#1a237e; line-height:1.7; }
+.warn { background:#fff3e0; border-left:4px solid #f57c00;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#e65100; line-height:1.7; }
+.disc { font-size:11px; color:#aaa; line-height:1.5; margin-top:12px; padding-top:10px; border-top:1px solid #eee; }
+table.dt { border-collapse:collapse; width:100%; font-size:14px; }
+table.dt th { background:#37474F; color:white; padding:11px 16px; font-weight:700; text-align:center; }
+table.dt td { padding:11px 16px; text-align:center; border-bottom:1px solid #eee; }
+table.dt .rl { text-align:left; font-weight:600; color:#555; background:#f8f9fa; }
+</style>
+</head><body>
+<div class="slide"><div class="slide-hd"><h1>상품 파라미터</h1><p class="sub">시뮬레이션 전제 조건 및 파라미터</p></div>
+<div class="slide-bd">
+<table class="dt">
+<tr><th style="text-align:left;width:250px">항목</th><th>내용</th></tr>
+<tr><td class="rl">대상 포트폴리오</td><td>Port_9.0% (목표수익률 9.0% / 변동성 8.36%)</td></tr>
+<tr><td class="rl">자산배분</td><td>미국성장주 42.67% / 한국국고채10년 27.02% / 금 26.29% / 한국주식 3.88% / 신흥국달러채권 0.14%</td></tr>
+<tr><td class="rl">인출 전략</td><td>Guardrail +-5% Band (W/NAV 비율 기준)</td></tr>
+<tr><td class="rl">목표 인출률</td><td>연 12% (초기 1.2억원 기준 월 100만원)</td></tr>
+<tr><td class="rl">시뮬레이션 방법</td><td>과거 데이터 Rolling (2001~2025, 총 181개 경로)</td></tr>
+<tr><td class="rl">시뮬레이션 기간</td><td>120개월 (10년)*</td></tr>
+<tr><td class="rl">실효 인출률</td><td>백테스트 평균 약 11.4% (목표 12% 대비 시장 상황에 따라 변동)</td></tr>
+<tr><td class="rl">성과 지표</td><td>총가치 (기말잔액 + 누적인출금 합산)</td></tr>
+</table>
+
+<div class="warn" style="margin-top:20px">
+  <b>* 시뮬레이션 기간 유의사항:</b> 본 분석은 10년(120개월) 기준입니다.
+  실제 퇴직연금 인출 기간(20~30년)에 적용 시 추천 인출률의 하향 조정이 필요할 수 있습니다.
+  장기 시뮬레이션 결과는 별도 협의 시 제공 가능합니다.
+</div>
+
+<div class="callout">
+  <b>포트폴리오 선택 근거:</b> Port_9.0%는 목표수익률 9%, 변동성 8.36%의 공격적 포트폴리오로,
+  Guardrail 효과가 가장 극적으로 나타나는 구간입니다.
+  보수적/중립적 위험등급(5%/7%) 결과는 부록에서 확인 가능합니다.
+</div>
+<div class="disc">본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발생할 수 있습니다. 모든 수치는 명목 기준(인플레이션 미조정)이며, 시뮬레이션 기간은 10년입니다.</div></div>
+<div class="slide-ft"><span>본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발...</span><span class="pn">5 / 11</span></div>
+</div></body></html>

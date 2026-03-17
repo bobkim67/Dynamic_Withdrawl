@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
+<title>Guardrail 인출 전략 제안서</title>
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:"Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; background:#e8eaed; }
+.tab-bar { position:sticky; top:0; z-index:100; display:flex; align-items:center;
+    background:linear-gradient(135deg,#0d1b4a 0%,#1a237e 100%);
+    padding:0 12px; box-shadow:0 2px 8px rgba(0,0,0,0.3); overflow-x:auto; }
+.tab-bar .logo { color:white; font-weight:800; font-size:14px; padding:14px 14px 14px 8px;
+    white-space:nowrap; border-right:1px solid rgba(255,255,255,0.15); margin-right:4px; }
+.tab-btn { background:none; border:none; color:rgba(255,255,255,0.5);
+    font-family:inherit; font-size:13px; font-weight:600;
+    padding:14px 14px; cursor:pointer; border-bottom:3px solid transparent;
+    transition:all 0.15s; white-space:nowrap; }
+.tab-btn:hover { color:rgba(255,255,255,0.8); background:rgba(255,255,255,0.05); }
+.tab-btn.active { color:white; border-bottom-color:#ff9800; background:rgba(255,255,255,0.08); }
+.frame { width:100%; height:calc(100vh - 50px); }
+.frame iframe { width:100%; height:100%; border:none; background:#f0f2f5; }
+</style></head><body>
+<div class="tab-bar">
+    <div class="logo">인출 전략 제안서</div>
+    <button class="tab-btn active" onclick="go(0,this)">표지</button>
+    <button class="tab-btn" onclick="go(1,this)">1. 한눈에 보기</button>
+    <button class="tab-btn" onclick="go(2,this)">2. 투자 포인트</button>
+    <button class="tab-btn" onclick="go(3,this)">3. 판매사 관점</button>
+    <button class="tab-btn" onclick="go(4,this)">4. 메커니즘</button>
+    <button class="tab-btn" onclick="go(5,this)">5. 파라미터</button>
+    <button class="tab-btn" onclick="go(6,this)">6. 전체 백테스트</button>
+    <button class="tab-btn" onclick="go(7,this)">7. 2005~2015</button>
+    <button class="tab-btn" onclick="go(8,this)">8. 2010~2020</button>
+    <button class="tab-btn" onclick="go(9,this)">9. 2015~2025</button>
+    <button class="tab-btn" onclick="go(10,this)">마무리</button>
+    <button class="tab-btn" onclick="go(11,this)">부록</button>
+</div>
+<div class="frame"><iframe id="f" src="proposal_00_cover.html"></iframe></div>
+<script>
+const P=['proposal_00_cover.html','proposal_01_overview.html','proposal_02_invest_point1.html','proposal_03_invest_point2.html','proposal_04_flowchart.html','proposal_05_params.html','proposal_06_backtest_all.html','proposal_07_backtest_2005.html','proposal_08_backtest_2010.html','proposal_09_backtest_2015.html','proposal_10_closing.html','proposal_11_appendix.html'];
+function go(i,b){document.getElementById('f').src=P[i];
+document.querySelectorAll('.tab-btn').forEach(x=>x.classList.remove('active'));b.classList.add('active');}
+document.addEventListener('keydown',e=>{const B=[...document.querySelectorAll('.tab-btn')];
+let c=B.findIndex(x=>x.classList.contains('active'));
+if(e.key==='ArrowRight'&&c<B.length-1)go(c+1,B[c+1]);
+if(e.key==='ArrowLeft'&&c>0)go(c-1,B[c-1]);});
+</script></body></html>

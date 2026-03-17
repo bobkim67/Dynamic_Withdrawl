@@ -1,0 +1,71 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>투자 포인트 2 : 판매사 관점</title>
+<style>
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css");
+* { box-sizing: border-box; }
+body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; margin:0; padding:0; background:#eef0f4; color:#222; font-size:15px; }
+.slide { width:1280px; min-height:720px; margin:20px auto; background:white;
+    box-shadow:0 4px 24px rgba(0,0,0,0.10); border-radius:8px; overflow:hidden; position:relative; }
+.slide-hd { background:linear-gradient(135deg,#0d1b4a 0%,#283593 100%);
+    color:white; padding:30px 52px 22px; }
+.slide-hd h1 { margin:0 0 6px; font-size:30px; font-weight:800; }
+.slide-hd .sub { font-size:15px; color:rgba(255,255,255,0.65); margin:0; }
+.slide-bd { padding:28px 52px 16px; }
+.slide-ft { position:absolute; bottom:0; left:0; right:0; padding:10px 52px;
+    font-size:11px; color:#aaa; border-top:1px solid #eee; background:#fafafa;
+    display:flex; justify-content:space-between; }
+.pn { font-weight:700; color:#1a237e; }
+.callout { background:#e8eaf6; border-left:4px solid #3949ab;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#1a237e; line-height:1.7; }
+.warn { background:#fff3e0; border-left:4px solid #f57c00;
+    padding:14px 20px; border-radius:0 6px 6px 0; margin:14px 0; font-size:14px; color:#e65100; line-height:1.7; }
+.disc { font-size:11px; color:#aaa; line-height:1.5; margin-top:12px; padding-top:10px; border-top:1px solid #eee; }
+table.dt { border-collapse:collapse; width:100%; font-size:14px; }
+table.dt th { background:#37474F; color:white; padding:11px 16px; font-weight:700; text-align:center; }
+table.dt td { padding:11px 16px; text-align:center; border-bottom:1px solid #eee; }
+table.dt .rl { text-align:left; font-weight:600; color:#555; background:#f8f9fa; }
+</style>
+</head><body>
+<div class="slide"><div class="slide-hd"><h1>투자 포인트 2 : 판매사 관점</h1><p class="sub">고객 보호 = AUM 유지 = 판매보수 장기화</p></div>
+<div class="slide-bd">
+<div style="display:flex;gap:28px;margin-bottom:20px">
+  <div style="flex:1">
+    <div style="background:linear-gradient(135deg,#1a237e,#283593);border-radius:12px;padding:32px;color:white;text-align:center;margin-bottom:20px">
+      <div style="font-size:16px;color:rgba(255,255,255,0.6);margin-bottom:8px">Fixed 인출 전략</div>
+      <div style="font-size:42px;font-weight:900;color:#EF5350">조기 파산 위험</div>
+      <div style="font-size:15px;color:rgba(255,255,255,0.7);margin-top:12px">
+        고정 인출 → 하락장에서 자본 급감 → 파산<br>
+        <b>AUM 소멸 → 판매보수 중단</b>
+      </div>
+    </div>
+    <div style="background:#ffebee;border-radius:10px;padding:20px;text-align:center">
+      <div style="font-size:15px;color:#c62828;font-weight:700">백테스트 결과 (12% 인출)</div>
+      <div style="font-size:14px;color:#555;margin-top:8px">파산 경로 존재 → 운용 기간 단축</div>
+    </div>
+  </div>
+  <div style="flex:0 0 60px;display:flex;align-items:center;justify-content:center">
+    <div style="font-size:48px;color:#ccc">VS</div>
+  </div>
+  <div style="flex:1">
+    <div style="background:linear-gradient(135deg,#1a237e,#283593);border-radius:12px;padding:32px;color:white;text-align:center;margin-bottom:20px">
+      <div style="font-size:16px;color:rgba(255,255,255,0.6);margin-bottom:8px">Guardrail 인출 전략</div>
+      <div style="font-size:42px;font-weight:900;color:#4CAF50">파산 0%</div>
+      <div style="font-size:15px;color:rgba(255,255,255,0.7);margin-top:12px">
+        자동 인출 조절 → 자본 보존 → 운용 지속<br>
+        <b>AUM 장기 유지 → 판매보수 지속 수취</b>
+      </div>
+    </div>
+    <div style="background:#e8f5e9;border-radius:10px;padding:20px;text-align:center">
+      <div style="font-size:15px;color:#2E7D32;font-weight:700">백테스트 결과 (12% 인출)</div>
+      <div style="font-size:14px;color:#555;margin-top:8px">전 구간 파산 0% → 운용 기간 10년 완주</div>
+    </div>
+  </div>
+</div>
+
+<div class="callout">
+  <b>판매사 관점 핵심:</b> Guardrail 전략은 고객 자산의 조기 소진을 방지하여
+  <b>AUM을 장기간 유지</b>합니다. 이는 판매사의 판매보수 수취 기간 연장으로 직결됩니다.
+  고객 보호와 판매사 수익이 동일 방향으로 정렬되는 구조입니다.
+</div>
+<div class="disc">본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발생할 수 있습니다. 모든 수치는 명목 기준(인플레이션 미조정)이며, 시뮬레이션 기간은 10년입니다.</div></div>
+<div class="slide-ft"><span>본 분석은 과거 데이터 기반 시뮬레이션이며, 미래 수익률을 보장하지 않습니다. 투자 성과는 시장 상황에 따라 달라질 수 있으며, 원금 손실이 발...</span><span class="pn">3 / 11</span></div>
+</div></body></html>
