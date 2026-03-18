@@ -63,8 +63,31 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 - **`guardrail_persuasion.py`**: standalone matplotlib 비교 차트 (Fixed vs Guardrail NAV + 인출액). 출력: `guardrail_persuasion.png/svg`.
 - **`dynamic_simulator.py`**: 기존 시뮬레이터 (Fixed/Guardrails 전략). 참조용. 추후 통합 여부 판단.
 
-### 인출 시뮬레이션 순서 (매월 반복, 순서 고정)
+### 신규 상품 펀드 파이프라인 (v4+)
 
+- **`build_product_paths.py`**: bm_list + MP_Position → 3개 펀드(Golden Growth, MS GROWTH, MS STABLE)의 KRW 환산 일별 수익률 → 월간 수익률 → Rolling + Bootstrap 경로 생성. 출력: `product_paths.pkl`. USD 자산은 T-1 래그 반영 (`usd_ret.shift(1)`). MP 자산명 표준화 (`MP_NAME_ALIAS`).
+- **`grid_search_product.py`**: product_paths.pkl 기반 grid search. 기존 grid_results_full.pkl에 합산. 3개 펀드 × rolling/bootstrap.
+- **`run_product_sim.py`**: product_paths.pkl 기반 인출 시뮬레이션 (Fixed vs Guardrail). 출력: `product_sim_results.pkl`.
+- **`export_rolling_detail.py`**: 2016-01~2025-12 rolling 경로의 **일별 수식 기반 엑셀** 출력. 전체 셀이 엑셀 수식. BM 지수는 KRW 환산 누적지수. 월초에만 인출 발생. NAV 로직: `NAV(인출후) = NAV(인출전) - 인출`, `수익률반영NAV = NAV(인출후) × (1 + r)`, 다음행 `NAV(인출전) = 전행 수익률반영NAV`.
+- **`proposal_charts.py`**: 판매사 본부 설득용 HTML 제안서 (11장 + 부록). Port_9.0% / 12% 인출 / Band +-5%.
+
+### 신규 상품 데이터 흐름
+
+1. `../bm_list` (17개 자산 일별 가격지수 + USDKRW 환율)
+2. `../MP_Position_20260317` (일별 MP 비중, 리밸런싱 시점에만 변경)
+3. `build_product_paths.py`: 일별 KRW 환산 수익률 (USD T-1 래그) → 월간 복리 → Rolling 55개 + Bootstrap 181개
+4. `grid_search_product.py`: 9개 포트폴리오 총 27,000건 grid results
+5. `viewer.py`: 기존 6개 + 신규 3개 포트폴리오 통합 표시
+
+### USD 자산 KRW 환산 규칙
+
+- **T일 KRW 기준가 = USD가격(T-1) × 환율(T)**
+- 일별: `krw_ret = (1 + usd_ret.shift(1)) * (1 + fx_ret) - 1`
+- 월간 엑셀에서 이 래그를 직접 구현하면 **한 달 래그**가 되므로, 반드시 **일별로 래그 적용 후 월간 복리 합산**해야 함
+
+### 인출 시뮬레이션 순서 — engine.py (매월 반복)
+
+**현행 engine.py 로직 (Ordinary Annuity):**
 1. 수익률 적용: `W_t = W_{t-1} * (1 + r_t)`
 2. 인출 시도액: `prev_withdraw` (이전 달 인출액 유지, 초기값 = `W0 * init_wr / 12`)
 3. 수익률 기반 보정 (옵션): lookback 기간 -> threshold 확인 -> +-adj%
@@ -107,6 +130,8 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 8. ~~**engine.py Guardrail 로직 통일**~~ — v6.0에서 W/NAV 비율 밴드 방식으로 통일 완료
 9. ~~**Tab 3 리팩토링**~~ — v7.0에서 2컬럼 레이아웃 + Section 4,5 삭제 + 분석결과 확장 완료
 10. ~~**Volatility-Adjusted Guardrail**~~ — v7.2에서 engine.py vol_adj 파라미터 + grid_search/gbm_grid_search vol_adjusted 전략 추가 + viewer.py 3종 비교 완료
+11. **engine.py 월초 인출(Annuity Due) 로직 전환** — 엑셀은 월초 인출로 구현 완료. engine.py는 아직 Ordinary Annuity. 수치 차이 0.6% 수준. 통일 검토 필요.
+12. **엑셀 검증열과 Python 값 일치 확인** — 첫 행 수익률 0% 문제 수정 완료. 최종 총가치 일치 여부 검증 진행 중.
 
 ## 코딩 컨벤션
 

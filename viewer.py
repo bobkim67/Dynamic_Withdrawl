@@ -38,6 +38,9 @@ PORT_COLORS = {
     'Port_7.0%': '#E91E63',
     'Port_8.0%': '#9C27B0',
     'Port_9.0%': '#00BCD4',
+    'Golden Growth': '#F44336',
+    'MS GROWTH': '#3F51B5',
+    'MS STABLE': '#607D8B',
 }
 
 PATH_METHOD_LABELS = {
@@ -2192,7 +2195,7 @@ def render_tab3_historical(df_all, beta, path_method, df_gbm=None):
 # ============================================================================
 
 def render_tab_findings(df_all, beta, path_method, df_gbm=None):
-    """분석결과 탭: Guardrail 효과 분석 (언제 유리/불리) + 종합 분석결과."""
+    """분석결과 탭: 기존 포트폴리오 + 신규 펀드 서브탭."""
 
     st.markdown("### 분석결과")
     st.caption(
@@ -2201,123 +2204,163 @@ def render_tab_findings(df_all, beta, path_method, df_gbm=None):
     )
 
     hist_band = FIXED_BAND
-
     df = df_all[(df_all['beta'] == beta) & (df_all['path_method'] == path_method)].copy()
     if len(df) == 0:
         st.warning("선택된 기말잔액 비율/데이터 기반 조합에 맞는 데이터가 없습니다.")
         return
 
-    portfolios = sorted(df['portfolio'].unique())
+    # 기존/신규 포트폴리오 분리
+    existing_ports = [p for p in sorted(df['portfolio'].unique()) if p.startswith('Port_')]
+    product_ports = [p for p in sorted(df['portfolio'].unique()) if not p.startswith('Port_')]
+
+    sub_tabs = []
+    sub_labels = []
+    if existing_ports:
+        sub_labels.append("기존 포트폴리오")
+    if product_ports:
+        sub_labels.append("신규 펀드")
+    if not sub_labels:
+        st.info("데이터가 없습니다.")
+        return
+    sub_tabs = st.tabs(sub_labels)
+
+    for tab_idx, (tab, port_list) in enumerate(zip(sub_tabs, [existing_ports, product_ports] if len(sub_labels) == 2 else [existing_ports or product_ports])):
+        with tab:
+            _render_findings_for_ports(df, port_list, hist_band)
+
+
+def _render_findings_for_ports(df, portfolios, hist_band):
+    """특정 포트폴리오 목록에 대한 분석결과 렌더링 (목표달성률 제거, 총가치+실효인출률 중심)."""
+
     wrs = sorted(df['init_wr'].unique())
 
-    # ========================================
-    # 1. Guardrail 효과 분석 — 언제 효과적이고 언제 아닌가
-    # ========================================
-    st.subheader("1. Guardrail 효과 분석: 언제 유리하고 언제 불리한가")
-
-    # 전 포트폴리오 × 전 인출률에 대해 Fixed vs Guardrail vs Vol-Adjusted 비교
+    # 전 포트폴리오 × 전 인출률: Fixed vs Guardrail 비교
     _eff_rows = []
     for port in portfolios:
+        port_df = df[df['portfolio'] == port]
         for wr in wrs:
-            f_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
-                       (df['strategy_type'] == 'fixed_baseline')]
-            g_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
-                       (df['strategy_type'] == 'dynamic') & (df['band'] == hist_band)]
-            v_row = df[(df['portfolio'] == port) & (df['init_wr'] == wr) &
-                       (df['strategy_type'] == 'vol_adjusted') & (df['band'] == hist_band)]
+            f_row = port_df[(np.isclose(port_df['init_wr'], wr, atol=0.001)) &
+                            (port_df['strategy_type'] == 'fixed_baseline')]
+            g_row = port_df[(np.isclose(port_df['init_wr'], wr, atol=0.001)) &
+                            (port_df['strategy_type'] == 'dynamic') &
+                            (np.isclose(port_df['band'], hist_band, atol=0.001))]
             if len(f_row) > 0 and len(g_row) > 0:
                 fr = f_row.iloc[0]
                 gr = g_row.iloc[0]
-                sr_d = (gr['success_rate'] - fr['success_rate']) * 100
                 f_total = (fr.get('terminal_nav_median', 0) or 0) + fr['cum_withdraw_median']
                 g_total = (gr.get('terminal_nav_median', 0) or 0) + gr['cum_withdraw_median']
                 total_d = g_total - f_total
-                row = {
+                g_eff_wr = gr['cum_withdraw_median'] / (100 * 10) * 100
+                f_eff_wr = fr['cum_withdraw_median'] / (100 * 10) * 100
+                _eff_rows.append({
                     '포트폴리오': port,
-                    '초기인출률': f"{wr*100:.1f}%",
-                    'Fixed 목표달성률': f"{fr['success_rate']*100:.1f}%",
-                    'Guardrail 목표달성률': f"{gr['success_rate']*100:.1f}%",
-                    '목표달성률 차이(%p)': round(sr_d, 1),
-                    'Fixed 총 가치 (누적인출금+기말NAV)': round(f_total, 1),
-                    'Guardrail 총 가치 (누적인출금+기말NAV)': round(g_total, 1),
-                    '총 가치 차이': round(total_d, 1),
-                    '_sr_diff': sr_d,
+                    '명목인출률': f"{wr*100:.1f}%",
+                    'Fixed 누적인출': round(fr['cum_withdraw_median'], 1),
+                    'Guard 누적인출': round(gr['cum_withdraw_median'], 1),
+                    'Fixed 기말잔액': round(fr.get('terminal_nav_median', 0) or 0, 1),
+                    'Guard 기말잔액': round(gr.get('terminal_nav_median', 0) or 0, 1),
+                    'Fixed 총가치': round(f_total, 1),
+                    'Guard 총가치': round(g_total, 1),
+                    '총가치 차이': round(total_d, 1),
+                    'Guard 실효인출률': f"{g_eff_wr:.1f}%",
+                    'Fixed 실효인출률': f"{f_eff_wr:.1f}%",
                     '_total_diff': total_d,
-                }
-                if len(v_row) > 0:
-                    vr = v_row.iloc[0]
-                    v_sr_d = (vr['success_rate'] - gr['success_rate']) * 100
-                    row['VolAdj 목표달성률'] = f"{vr['success_rate']*100:.1f}%"
-                    row['VolAdj vs Guard(%p)'] = round(v_sr_d, 1)
-                _eff_rows.append(row)
+                    '_g_eff_wr': g_eff_wr,
+                    '_wr': wr,
+                })
 
-    if _eff_rows:
-        _eff_df = pd.DataFrame(_eff_rows)
-
-        # Guardrail 효과 최대 (목표달성률 기준)
-        st.markdown("##### Guardrail 효과가 가장 큰 조건 (목표달성률 기준)")
-        _top_sr = _eff_df.nlargest(5, '_sr_diff')[
-            ['포트폴리오', '초기인출률', 'Fixed 목표달성률', 'Guardrail 목표달성률', '목표달성률 차이(%p)', '총 가치 차이']
-        ]
-        st.dataframe(_top_sr, width='stretch', hide_index=True)
-
-        # Guardrail 효과 최대 (누적인출금 + 기말 NAV 기준)
-        st.markdown("##### Guardrail 효과가 가장 큰 조건 (누적인출금 + 기말 NAV 기준)")
-        _top_total = _eff_df.nlargest(5, '_total_diff')[
-            ['포트폴리오', '초기인출률', 'Fixed 총 가치 (누적인출금+기말NAV)', 'Guardrail 총 가치 (누적인출금+기말NAV)', '총 가치 차이', '목표달성률 차이(%p)']
-        ]
-        st.dataframe(_top_total, width='stretch', hide_index=True)
-
-        # Guardrail 효과 없거나 불리한 경우
-        st.markdown("##### Guardrail이 불리하거나 차이 없는 조건")
-        _worst = _eff_df.nsmallest(5, '_sr_diff')[
-            ['포트폴리오', '초기인출률', 'Fixed 목표달성률', 'Guardrail 목표달성률', '목표달성률 차이(%p)', '총 가치 차이']
-        ]
-        st.dataframe(_worst, width='stretch', hide_index=True)
-
-        # ========================================
-        # 2. 분석결과
-        # ========================================
-        st.markdown("---")
-        st.subheader("2. 종합 분석결과")
-
-        st.markdown(_finding_box(
-            f"<b>1. Guardrail이 유리한 조건</b><br>"
-            f"\u2022 <b>중위험 포트폴리오(4~6%) + 중~고인출률(8~12%)</b>: "
-            f"Fixed는 하락장에서 자본이 빠르게 소진되어 파산하지만, Guardrail은 인출 축소로 버텨 회복 기회를 확보합니다.<br>"
-            f"\u2022 <b>고인출률(12%+) 전반</b>: 인출 압박이 강할수록 Guardrail의 자본 보전 효과가 극대화됩니다.<br>"
-            f"\u2022 <b>변동성이 큰 시장 환경</b>: GBM 이론 분석에서도 \u03c3\u2191일수록 Guardrail 우위가 커지는 패턴이 확인됩니다."
-        ), unsafe_allow_html=True)
-
-        st.markdown(_finding_box(
-            f"<b>2. Guardrail이 불리한 조건</b><br>"
-            f"\u2022 <b>저인출률(3~4%) + 고수익 포트폴리오(8~9%)</b>: "
-            f"이미 Fixed 목표달성률이 100%에 근접하여 Guardrail 조절이 불필요합니다. "
-            f"오히려 인출 축소가 누적인출금을 줄여 총 가치가 다소 감소합니다.<br>"
-            f"\u2022 <b>극저변동성 환경(\u03c3 &lt; 4%)</b>: 자산 변동 자체가 작아 인출 조절의 실익이 미미합니다."
-        ), unsafe_allow_html=True)
-
-        st.markdown(_finding_box(
-            f"<b>3. 실무적 시사점</b><br>"
-            f"\u2022 퇴직연금 OCIO 펀드의 실제 인출률 범위(4~8%)에서 Guardrail은 "
-            f"목표달성률을 유의미하게 개선하면서 인출 안정성을 확보합니다.<br>"
-            f"\u2022 총 가치 차이가 크지 않다는 것은 '같은 경제적 가치를 유지하면서 파산 위험만 줄인다'는 의미이므로, "
-            f"Guardrail 도입의 비용(기회비용)이 낮다는 긍정적 신호입니다.<br>"
-            f"\u2022 Band \u00b15%의 소폭 조정으로도 충분한 효과를 얻을 수 있어, "
-            f"수익자 입장에서 인출액 변동의 체감 불편이 최소화됩니다."
-        ), unsafe_allow_html=True)
-
-        st.markdown(_finding_box(
-            f"<b>4. Volatility-Adjusted Guardrail</b><br>"
-            f"\u2022 <b>밴드 폭을 실현 변동성으로 동적 조정</b>: "
-            f"고변동성 구간에서는 밴드를 확대하여 더 적극적으로 인출을 조절하고, "
-            f"저변동성 구간에서는 밴드를 축소하여 인출 안정성을 유지합니다.<br>"
-            f"\u2022 σ_realized / σ_target 비율로 밴드 폭을 0.5x~2.0x 범위에서 자동 조정합니다.<br>"
-            f"\u2022 기존 Guardrail 대비 <b>고변동성 환경에서 추가적인 자본 보전 효과</b>가 기대됩니다."
-        ), unsafe_allow_html=True)
-
-    else:
+    if not _eff_rows:
         st.info("비교 데이터가 부족합니다.")
+        return
+
+    _eff_df = pd.DataFrame(_eff_rows)
+
+    # --- 1. 총가치 기준 Top/Bottom ---
+    st.subheader("1. Guardrail 효과 분석 (총가치 기준)")
+
+    st.markdown("##### Guardrail 총가치 우위가 가장 큰 조건")
+    _top = _eff_df.nlargest(5, '_total_diff')[
+        ['포트폴리오', '명목인출률', 'Fixed 총가치', 'Guard 총가치', '총가치 차이']
+    ]
+    st.dataframe(_top, width='stretch', hide_index=True)
+
+    st.markdown("##### Guardrail 총가치 차이가 가장 작은/불리한 조건")
+    _worst = _eff_df.nsmallest(5, '_total_diff')[
+        ['포트폴리오', '명목인출률', 'Fixed 총가치', 'Guard 총가치', '총가치 차이']
+    ]
+    st.dataframe(_worst, width='stretch', hide_index=True)
+
+    # --- 2. 실효인출률 vs Fixed 동일 인출률 비교 ---
+    st.markdown("---")
+    st.subheader("2. 실효인출률 분석: Guardrail의 실제 인출 vs 동일 Fixed")
+
+    st.caption("Guardrail은 밴드 조절로 명목인출률보다 낮은 실효인출률이 나옵니다. "
+               "이 실효인출률로 Fixed를 운용했다면 총가치가 어떻게 되는지 비교합니다.")
+
+    _eff_compare_rows = []
+    for port in portfolios:
+        port_df = _eff_df[_eff_df['포트폴리오'] == port]
+        for _, row in port_df.iterrows():
+            g_eff = row['_g_eff_wr']  # Guardrail 실효인출률 (%)
+            nom_wr = row['_wr']       # 명목인출률 (소수)
+
+            # 실효인출률에 가장 가까운 Fixed 결과 찾기
+            f_at_eff = df[(df['portfolio'] == port) &
+                          (df['strategy_type'] == 'fixed_baseline')].copy()
+            if len(f_at_eff) == 0:
+                continue
+            f_at_eff['_wr_diff'] = (f_at_eff['init_wr'] * 100 - g_eff).abs()
+            closest = f_at_eff.nsmallest(1, '_wr_diff').iloc[0]
+            f_eff_total = (closest.get('terminal_nav_median', 0) or 0) + closest['cum_withdraw_median']
+            matched_wr = closest['init_wr'] * 100
+
+            _eff_compare_rows.append({
+                '포트폴리오': port,
+                '명목인출률': f"{nom_wr*100:.1f}%",
+                'Guard 실효인출률': f"{g_eff:.1f}%",
+                'Guard 총가치': row['Guard 총가치'],
+                f'Fixed@실효인출률 총가치': round(f_eff_total, 1),
+                'Fixed 매칭인출률': f"{matched_wr:.1f}%",
+                'Guard 우위': round(row['Guard 총가치'] - f_eff_total, 1),
+            })
+
+    if _eff_compare_rows:
+        _eff_cmp_df = pd.DataFrame(_eff_compare_rows)
+        # 대표 인출률만 표시 (5%, 8%, 10%, 12%, 15%)
+        target_wrs = ['5.0%', '8.0%', '10.0%', '12.0%', '15.0%']
+        _show = _eff_cmp_df[_eff_cmp_df['명목인출률'].isin(target_wrs)]
+        if len(_show) == 0:
+            _show = _eff_cmp_df.head(15)
+        st.dataframe(_show, width='stretch', hide_index=True)
+
+        st.markdown(_finding_box(
+            "<b>해석:</b> Guard 실효인출률 = Guardrail이 실제로 인출한 비율. "
+            "이 비율로 Fixed를 돌렸을 때보다 Guard 총가치가 높다면, "
+            "Guardrail은 단순히 '덜 뽑아서' 좋은 게 아니라 <b>타이밍 조절로 추가 가치를 창출</b>한 것입니다."
+        ), unsafe_allow_html=True)
+
+    # --- 3. 종합 분석결과 ---
+    st.markdown("---")
+    st.subheader("3. 종합 분석결과")
+
+    st.markdown(_finding_box(
+        f"<b>1. Guardrail이 유리한 조건</b><br>"
+        f"\u2022 <b>중~고인출률(8~12%)</b>: 인출 압박이 강할수록 Guardrail의 자본 보전 효과가 극대화됩니다.<br>"
+        f"\u2022 <b>변동성이 큰 포트폴리오</b>: 하락장 인출 축소 → 회복기 복리 효과 → 총가치 극대화."
+    ), unsafe_allow_html=True)
+
+    st.markdown(_finding_box(
+        f"<b>2. Guardrail이 불리한 조건</b><br>"
+        f"\u2022 <b>저인출률(3~4%) + 고수익 포트폴리오</b>: "
+        f"인출 조절이 불필요한 수준이라 오히려 누적인출금이 줄어 총가치가 소폭 감소.<br>"
+        f"\u2022 <b>극저변동성 환경</b>: 자산 변동 자체가 작아 조절 실익이 미미."
+    ), unsafe_allow_html=True)
+
+    st.markdown(_finding_box(
+        f"<b>3. 실무적 시사점</b><br>"
+        f"\u2022 실효인출률 대비 동일 Fixed보다 총가치가 높다면, Guardrail은 '타이밍 조절 알파'를 제공.<br>"
+        f"\u2022 Band \u00b15%의 소폭 조정으로도 충분한 효과 — 수급자 인출액 변동 체감이 최소화."
+    ), unsafe_allow_html=True)
 
 
 # ============================================================================
@@ -3016,8 +3059,13 @@ def render_tab_vol_adjusted(df_all, beta, path_method, df_gbm=None):
     pct_va_better = (comp_df['_va_vs_guard_sr'] > 0.05).sum() / len(comp_df) * 100  # >0.05%p 개선
 
     # 고변동성 포트폴리오 (target_risk 높은 것)에서의 효과
-    high_risk_ports = [p for p in portfolios if float(p.replace('Port_','').replace('%','')) >= 7.0]
-    low_risk_ports = [p for p in portfolios if float(p.replace('Port_','').replace('%','')) <= 5.0]
+    def _port_risk(p):
+        try:
+            return float(p.replace('Port_','').replace('%',''))
+        except ValueError:
+            return PORTFOLIOS.get(p, {}).get('target_risk', 5.0)
+    high_risk_ports = [p for p in portfolios if _port_risk(p) >= 7.0]
+    low_risk_ports = [p for p in portfolios if _port_risk(p) <= 5.0]
     avg_high = comp_df[comp_df['포트폴리오'].isin(high_risk_ports)]['_va_vs_guard_sr'].mean() if high_risk_ports else 0
     avg_low = comp_df[comp_df['포트폴리오'].isin(low_risk_ports)]['_va_vs_guard_sr'].mean() if low_risk_ports else 0
 
