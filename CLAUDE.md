@@ -133,6 +133,69 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 11. **engine.py 월초 인출(Annuity Due) 로직 전환** — 엑셀은 월초 인출로 구현 완료. engine.py는 아직 Ordinary Annuity. 수치 차이 0.6% 수준. 통일 검토 필요.
 12. **엑셀 검증열과 Python 값 일치 확인** — 첫 행 수익률 0% 문제 수정 완료. 최종 총가치 일치 여부 검증 진행 중.
 
+## 내부 의사결정 장표 (6장) — 제안서 구조
+
+### 장표 1. 시장 배경
+
+핵심 메시지: 퇴직연금 인출기 진입 가속 — 적립기 솔루션만으로는 부족
+
+- DB→DC/IRP 전환 추세, 베이비붐 세대 퇴직 본격화
+- 퇴직급여 일시금 vs 연금 선택 비율 변화
+- 기존 상품 라인업: 적립기(MS GROWTH/STABLE, TDF, TIF, Golden Growth) → 인출기 공백
+- 시장 기회: guardrail 기반 동적 인출 솔루션 수요
+
+### 장표 2. 고정 인출의 위험
+
+핵심 메시지: Fixed 인출은 시장 하락기에 원금 잠식 → 파산 리스크
+
+- viewer.py Tab 1 그림: Fixed vs Guardrail 비교 인포그래픽 (240개월 시뮬레이션)
+- Sequence-of-returns risk 시각화
+- "같은 평균 수익률이라도 초반 하락 시 회복 불가" 메시지
+
+### 장표 3. 솔루션: Guardrail 분배형 자펀드
+
+핵심 메시지: 기존 모펀드에 분배 기능만 얹는 구조 — 신규 운용 불필요
+
+- 구조도: 수급자 ← 분배형 자펀드(신규, 인출 규칙만) ← 모펀드(기존, 운용 그대로)
+- 왜 자펀드인가: 모펀드 규약 변경 불필요, 기존 적립기 자펀드와 병렬
+- Guardrail 메커니즘 도식: 밴드 내 유지 → 상한 초과 시 인출 삭감 / 하한 미달 시 인출 증액
+- 대상 모펀드: MS GROWTH(성장형), MS STABLE(안정형), Golden Growth
+
+### 장표 4. 백테스트 결과 — Historical
+
+핵심 메시지: 과거 10년(2016~2025) 실제 MP 비중 기반 시뮬레이션
+
+- rolling_detail Excel 기반: MS GROWTH / MS STABLE / Golden Growth
+- Fixed vs Guardrail NAV 경로 비교 차트
+- 누적 인출금 + 기말잔액 비교
+- 연 12% 인출 시나리오, Band 5% 기준
+
+### 장표 5. 백테스트 결과 — Monte Carlo & 최적화
+
+핵심 메시지: 다양한 시장 환경에서도 Guardrail이 성공률 제고
+
+- viewer.py Tab 3 그림: Historical(좌) + GBM(우) 히트맵
+- 포트폴리오별 성공률 비교 (Fixed vs Guardrail vs Vol-Adjusted)
+- Band 최적화 결과 (viewer Tab 4)
+- 핵심 수치: 성공률 XX%p 개선, 기말잔액 XX% 보존
+
+### 장표 6. 대상 모펀드 실적
+
+핵심 메시지: 검증된 운용 트랙 레코드 위에 인출 솔루션 탑재
+
+- DB_OCIO_Webview 데이터 활용: 모펀드 NAV 추이, AUM, 설정후 수익률
+- 자산배분 현황 (8분류 도넛)
+- Brinson PA 요약 (자산군별 기여수익률)
+- "운용은 이미 증명됨 — 인출 규칙만 추가"
+
+### 장표 4~5 데이터 소스
+
+- viewer.py + rolling_detail Excel에서 캡처/추출
+- 장표 6은 DB_OCIO_Webview에서 추출
+- 포맷: 미정 (HTML / PPT 검토 중)
+
+---
+
 ## 코딩 컨벤션
 
 - 과도한 모듈화 금지. 재사용되지 않는 함수 만들지 않기.
