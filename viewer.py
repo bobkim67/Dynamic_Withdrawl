@@ -1249,22 +1249,19 @@ def render_tab_data_validation(beta, path_method, init_wr):
             unsafe_allow_html=True,
         )
 
-    # 목표선 (실제 데이터 시뮬레이션 기준: W0=100.0)
-    target = 100.0 * beta
-
-    # Fixed vs Guardrail 시뮬레이션
-    fixed_success, fixed_failure, fixed_wd = simulate_paths_for_strategy(
-        tab1_port, init_wr, band=99.0, beta=beta, path_method=path_method
+    # Fixed vs Guardrail 시뮬레이션 (beta=0 → 파산만 판별)
+    fixed_survive, fixed_ruin, fixed_wd = simulate_paths_for_strategy(
+        tab1_port, init_wr, band=99.0, beta=0.0, path_method=path_method
     )
-    guard_success, guard_failure, guard_wd = simulate_paths_for_strategy(
-        tab1_port, init_wr, band=FIXED_BAND, beta=beta, path_method=path_method
+    guard_survive, guard_ruin, guard_wd = simulate_paths_for_strategy(
+        tab1_port, init_wr, band=FIXED_BAND, beta=0.0, path_method=path_method
     )
 
-    n_fixed_total = len(fixed_success) + len(fixed_failure)
-    n_guard_total = len(guard_success) + len(guard_failure)
-    fixed_sr = len(fixed_success) / n_fixed_total * 100 if n_fixed_total > 0 else 0
-    guard_sr = len(guard_success) / n_guard_total * 100 if n_guard_total > 0 else 0
-    delta_sr = guard_sr - fixed_sr
+    n_fixed_total = len(fixed_survive) + len(fixed_ruin)
+    n_guard_total = len(guard_survive) + len(guard_ruin)
+    fixed_ruin_pct = len(fixed_ruin) / n_fixed_total * 100 if n_fixed_total > 0 else 0
+    guard_ruin_pct = len(guard_ruin) / n_guard_total * 100 if n_guard_total > 0 else 0
+    delta_ruin = guard_ruin_pct - fixed_ruin_pct
 
     # ===== 2패널 스파게티 차트 =====
     col_fixed, col_guard = st.columns(2)
@@ -1276,18 +1273,20 @@ def render_tab_data_validation(beta, path_method, init_wr):
                 Fixed (고정 인출)
             </span>
             <span style="font-size:0.85em; color:#94a3b8; margin-left:8px;">
-                성공률 {fixed_sr:.1f}%
+                파산확률 {fixed_ruin_pct:.1f}%
             </span>
         </div>
         """, unsafe_allow_html=True)
 
         fig_fixed = go.Figure()
-        if fixed_failure:
-            fig_fixed.add_trace(_build_path_trace(fixed_failure, '#E74C3C', '실패 경로', alpha=0.15))
-        if fixed_success:
-            fig_fixed.add_trace(_build_path_trace(fixed_success, '#4CAF50', '성공 경로', alpha=0.15))
+        # 생존 경로 (회색)
+        if fixed_survive:
+            fig_fixed.add_trace(_build_path_trace(fixed_survive, '#9E9E9E', '생존 경로', alpha=0.12))
+        # 파산 경로 (빨간)
+        if fixed_ruin:
+            fig_fixed.add_trace(_build_path_trace(fixed_ruin, '#E74C3C', '파산 경로', alpha=0.3))
         # 중앙값 경로
-        all_fixed_paths = fixed_success + fixed_failure
+        all_fixed_paths = fixed_survive + fixed_ruin
         if all_fixed_paths:
             max_len = max(len(p) for p in all_fixed_paths)
             padded = np.full((len(all_fixed_paths), max_len), np.nan)
@@ -1300,13 +1299,6 @@ def render_tab_data_validation(beta, path_method, init_wr):
                 mode='lines', name='중앙값',
                 line=dict(color='#333', width=3),
             ))
-        # 목표선
-        fig_fixed.add_hline(
-            y=target, line_dash="dot", line_color="#FF9800", line_width=2,
-            annotation_text=f"목표 {target:.0f}",
-            annotation_position="bottom left",
-            annotation_font=dict(color="#FF9800", size=11),
-        )
         fig_fixed.update_layout(
             yaxis_title="잔액 (NAV)", xaxis_title="월", height=350,
             margin=dict(t=10, b=30, l=50, r=20),
@@ -1322,18 +1314,20 @@ def render_tab_data_validation(beta, path_method, init_wr):
                 Guardrail (&plusmn;{FIXED_BAND*100:.0f}%)
             </span>
             <span style="font-size:0.85em; color:#94a3b8; margin-left:8px;">
-                성공률 {guard_sr:.1f}%
+                파산확률 {guard_ruin_pct:.1f}%
             </span>
         </div>
         """, unsafe_allow_html=True)
 
         fig_guard = go.Figure()
-        if guard_failure:
-            fig_guard.add_trace(_build_path_trace(guard_failure, '#E74C3C', '실패 경로', alpha=0.15))
-        if guard_success:
-            fig_guard.add_trace(_build_path_trace(guard_success, '#4CAF50', '성공 경로', alpha=0.15))
+        # 생존 경로 (회색)
+        if guard_survive:
+            fig_guard.add_trace(_build_path_trace(guard_survive, '#9E9E9E', '생존 경로', alpha=0.12))
+        # 파산 경로 (빨간)
+        if guard_ruin:
+            fig_guard.add_trace(_build_path_trace(guard_ruin, '#E74C3C', '파산 경로', alpha=0.3))
         # 중앙값 경로
-        all_guard_paths = guard_success + guard_failure
+        all_guard_paths = guard_survive + guard_ruin
         if all_guard_paths:
             max_len = max(len(p) for p in all_guard_paths)
             padded = np.full((len(all_guard_paths), max_len), np.nan)
@@ -1346,13 +1340,6 @@ def render_tab_data_validation(beta, path_method, init_wr):
                 mode='lines', name='중앙값',
                 line=dict(color='#1565C0', width=3),
             ))
-        # 목표선
-        fig_guard.add_hline(
-            y=target, line_dash="dot", line_color="#FF9800", line_width=2,
-            annotation_text=f"목표 {target:.0f}",
-            annotation_position="bottom left",
-            annotation_font=dict(color="#FF9800", size=11),
-        )
         fig_guard.update_layout(
             yaxis_title="잔액 (NAV)", xaxis_title="월", height=350,
             margin=dict(t=10, b=30, l=50, r=20),
@@ -1384,10 +1371,10 @@ def render_tab_data_validation(beta, path_method, init_wr):
     mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
         st.metric(
-            "성공률 개선",
-            f"{delta_sr:+.1f}%p",
-            delta=f"{delta_sr:+.1f}%p (Fixed {fixed_sr:.1f}% → Guard {guard_sr:.1f}%)",
-            delta_color="normal" if delta_sr != 0 else "off",
+            "파산확률 변화",
+            f"{delta_ruin:+.1f}%p",
+            delta=f"Fixed {fixed_ruin_pct:.1f}% → Guard {guard_ruin_pct:.1f}%",
+            delta_color="inverse" if delta_ruin < 0 else ("normal" if delta_ruin == 0 else "off"),
         )
     cum_diff_abs = guard_cum_median - fixed_cum_median
     terminal_pct = ((guard_terminal_median / fixed_terminal_median) - 1) * 100 if fixed_terminal_median != 0 else 0
@@ -1408,7 +1395,7 @@ def render_tab_data_validation(beta, path_method, init_wr):
         )
     with mc4:
         st.metric(
-            "기말잔액 + 누적인출 합계",
+            "총가치 (잔액+인출)",
             f"{guard_total_median:.1f}",
             delta=f"{total_diff:+.1f} ({total_pct:+.1f}%) vs Fixed {fixed_total_median:.1f}",
             delta_color="normal" if total_diff != 0 else "off",

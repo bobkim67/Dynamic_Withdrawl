@@ -196,6 +196,110 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 ---
 
+## SCIP DB에서 벤치마크 데이터 가져오기
+
+### DB 접속
+
+```python
+import pymysql
+conn = pymysql.connect(host='192.168.195.55', user='solution', password='Solution123!',
+                       db='SCIP', charset='utf8mb4')
+```
+
+### 종목 검색 (back_dataset)
+
+```sql
+-- 이름/심볼로 검색
+SELECT id, name, ISIN, symbol FROM back_dataset
+WHERE name LIKE '%키워드%' OR symbol LIKE '%키워드%'
+
+-- 예: S&P 500 → id=24, Gold → id=408, IEF → id=74
+```
+
+### 사용 가능한 dataseries 확인
+
+종목마다 연결된 dataseries가 다르므로, 데이터 추출 전 반드시 확인:
+
+```sql
+SELECT dp.dataseries_id, ds.name, COUNT(*) as cnt,
+       MIN(DATE(dp.timestamp_observation)) as first_date,
+       MAX(DATE(dp.timestamp_observation)) as last_date
+FROM back_datapoint dp
+JOIN back_dataseries ds ON dp.dataseries_id = ds.id
+WHERE dp.dataset_id = {찾은 id}
+GROUP BY dp.dataseries_id, ds.name
+```
+
+### 주요 dataseries_id
+
+| id | name | blob 형태 | 용도 | 대상 |
+|----|------|-----------|------|------|
+| 6 | FG Return | `{"USD": x, "KRW": y}` | 가격/수익률 지수 | ETF, 주식지수 |
+| 9 | TOT RETURN INDEX NET DVDS | 단순 숫자 | 총수익지수 | Bloomberg 지수 |
+| 15 | FG Price | `{"USD": x, "KRW": y}` | 가격 | ETF |
+| 33 | KIS Bond Index | `{"totRtnIndex": "149.08", ...}` | 채권 총수익지수 | KIS 채권지수 |
+| 39 | FG Total Return Index | 단순 숫자 | 무헷지 총수익 | MSCI 등 |
+
+### 데이터 추출 + blob 파싱
+
+```python
+import pandas as pd, json
+
+df = pd.read_sql('''
+    SELECT DATE(timestamp_observation) as date, data
+    FROM back_datapoint
+    WHERE dataset_id = %s AND dataseries_id = %s
+    ORDER BY timestamp_observation
+''', conn, params=[dataset_id, dataseries_id])
+
+def parse_blob(blob, key=None):
+    if isinstance(blob, (bytes, bytearray)):
+        blob = blob.decode('utf-8')
+    blob = blob.strip()
+    if blob.startswith('{'):
+        obj = json.loads(blob)
+        if key:
+            return float(obj[key])
+        if isinstance(obj, dict):
+            return {k: float(v) for k, v in obj.items()}
+    return float(blob.replace(',', ''))
+
+# 사용 예:
+# dataseries_id=6 (FG Return): parse_blob(blob, 'KRW') 또는 parse_blob(blob, 'USD')
+# dataseries_id=33 (KIS Bond): parse_blob(blob, 'totRtnIndex')
+# dataseries_id=9 (Bloomberg TR): parse_blob(blob) → 단순 숫자
+```
+
+### bm_list에 새 지수 추가하는 패턴
+
+```python
+# 1. SCIP에서 추출
+prices = []
+for _, r in df.iterrows():
+    prices.append({'date': r['date'], 'NEW_COL': parse_blob(r['data'], 'USD')})
+new_df = pd.DataFrame(prices).set_index('date')
+new_df.index = pd.to_datetime(new_df.index)
+
+# 2. 기존 bm_list에 join
+bm = pd.read_csv('../bm_list', sep='\t', index_col=0, parse_dates=True)
+bm = bm.join(new_df, how='left')
+bm.to_csv('../bm_list', sep='\t')
+```
+
+### 주요 dataset_id 참조
+
+| id | name | symbol | 비고 |
+|----|------|--------|------|
+| 24 | S&P 500 ETF Trust | SPY-US | dataseries=6, blob `{"USD","KRW"}` |
+| 74 | iShares 7-10Y Treasury | IEF-US | dataseries=6, blob `{"USD","KRW"}` |
+| 152 | KIS 종합채권국공채4~5Y | BMA02 | dataseries=33, blob totRtnIndex |
+| 247 | Bloomberg EM Gov Bond | LHMN29341 | dataseries=6, blob `{"USD","KRW"}` |
+| 273 | KAP 종합채권 AA- | KBPMKTMB Index | dataseries=9, 단순숫자 |
+| 279 | KIS 종합채권 | BMM01 | dataseries=33, blob totRtnIndex |
+| 408 | Gold Spot | XAU Curncy | dataseries=15, blob `{"USD","KRW"}` |
+
+---
+
 ## 코딩 컨벤션
 
 - 과도한 모듈화 금지. 재사용되지 않는 함수 만들지 않기.
