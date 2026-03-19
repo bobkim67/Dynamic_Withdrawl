@@ -40,7 +40,15 @@ MP_NAME_ALIAS = {
     '한국 단기채': '한국 단기채권',
 }
 FX_COL = 'USDKRW Curncy'
-TARGET_FUNDS = ['Golden Growth', 'MS GROWTH', 'MS STABLE']
+TARGET_FUNDS = ['Golden Growth', 'MS GROWTH', 'MS STABLE', 'S&P500']
+
+# S&P500 100% 포트폴리오 (MP_Position 없이 고정 비중)
+STATIC_FUNDS = {
+    'S&P500': {'SPY': 1.0},  # SPY 100%, USD 자산
+}
+
+# SPY를 ASSET_MAP에 추가
+ASSET_MAP['SPY'] = ('SPY', 'USD')
 
 # ============================================================================
 print("1. 데이터 로딩...")
@@ -74,10 +82,18 @@ krw_index_df = pd.DataFrame({
 # MP 비중
 fund_daily_weights = {}
 for fund in TARGET_FUNDS:
-    sub = mp_pos[mp_pos['펀드설명'] == fund][['기준일자', '자산군_소', 'daily_weight_MP']].copy()
-    sub['자산군_소'] = sub['자산군_소'].replace(MP_NAME_ALIAS)
-    pivot = sub.pivot_table(index='기준일자', columns='자산군_소', values='daily_weight_MP', aggfunc='first')
-    pivot = pivot.sort_index().reindex(bm.index).ffill().bfill().fillna(0)
+    if fund in STATIC_FUNDS:
+        # 고정 비중 포트폴리오 (MP_Position 없음)
+        weights = STATIC_FUNDS[fund]
+        pivot = pd.DataFrame(
+            {asset: [wt] * len(bm) for asset, wt in weights.items()},
+            index=bm.index
+        )
+    else:
+        sub = mp_pos[mp_pos['펀드설명'] == fund][['기준일자', '자산군_소', 'daily_weight_MP']].copy()
+        sub['자산군_소'] = sub['자산군_소'].replace(MP_NAME_ALIAS)
+        pivot = sub.pivot_table(index='기준일자', columns='자산군_소', values='daily_weight_MP', aggfunc='first')
+        pivot = pivot.sort_index().reindex(bm.index).ffill().bfill().fillna(0)
     fund_daily_weights[fund] = pivot
 
 # ============================================================================

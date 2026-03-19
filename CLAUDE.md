@@ -71,6 +71,19 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 - **`export_rolling_detail.py`**: 2016-01~2025-12 rolling 경로의 **일별 수식 기반 엑셀** 출력. 전체 셀이 엑셀 수식. BM 지수는 KRW 환산 누적지수. 월초에만 인출 발생. NAV 로직: `NAV(인출후) = NAV(인출전) - 인출`, `수익률반영NAV = NAV(인출후) × (1 + r)`, 다음행 `NAV(인출전) = 전행 수익률반영NAV`.
 - **`proposal_charts.py`**: 판매사 본부 설득용 HTML 제안서 (11장 + 부록). Port_9.0% / 12% 인출 / Band +-5%.
 
+### Efficient Frontier 분석 도구
+
+- **`_frontier.py`**: 비율밴드 efficient frontier + vol-adjusted 비대칭 밴드 alpha 시각화. 3펀드 × 3차트(NAV/인출, Tot/Std, Tot/Worst) = 9탭 HTML. 출력: `efficient_frontier_vol_ratio.html`. Vol-adj 모델: 1σ SNR 기준 bl/bh 스위칭.
+- **`_frontier_xlsx.py`**: frontier 데이터를 엑셀로 출력. Frontier 곡선 + FA + FR + G5% + Vol 5/8%, 5/10%, 5/15%. 출력: `frontier_data.xlsx` (6시트).
+- **`quadrant_ruin_worst.html`**: 2x2 사분면 차트 (X: Worst Cut, Y: Ruin Rate). FA vs FR vs Guardrail vs Vol-Adj 포지셔닝.
+
+### 전략 비교 핵심 결론
+
+- **FA vs FR vs Guardrail**: Guardrail = FR의 파산 0건 + FA의 인출 안정성 결합
+- **Tot에서는 FR이 항상 우위** (Guardrail은 -1~2 양보). 알파는 인출 안정성(worst cut)에서만 존재
+- **Vol-Adj 5/8~15%**: 고변동성 펀드(MS GROWTH)에서 worst cut 개선 -5%p 수준
+- **셀링 포인트**: "FR처럼 파산 0건이면서, 하락장에서 인출이 급감하지 않음"
+
 ### 신규 상품 데이터 흐름
 
 1. `../bm_list` (17개 자산 일별 가격지수 + USDKRW 환율)
