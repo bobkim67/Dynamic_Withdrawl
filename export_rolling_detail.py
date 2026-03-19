@@ -45,6 +45,7 @@ TARGET_FUNDS = ['Golden Growth', 'MS GROWTH', 'MS STABLE']
 # ============================================================================
 print("1. 데이터 로딩...")
 bm = pd.read_csv('../bm_list', sep='\t', index_col=0, parse_dates=True)
+bm = bm[~bm.index.duplicated(keep='last')]  # 중복 날짜 제거 (마지막 값 유지)
 mp_pos = pd.read_csv('../MP_Position_20260317', sep='\t')
 mp_pos['기준일자'] = pd.to_datetime(mp_pos['기준일자'])
 fx = bm[FX_COL].copy()
@@ -146,20 +147,23 @@ for fund in TARGET_FUNDS:
     col_ret = CB + n_ast
     col_wt = CB + 2 * n_ast
     col_pr = CB + 3 * n_ast       # 포트 일별수익률
-    col_nb = col_pr + 1           # G_NAV(인출전)
+    col_nw = col_pr + 1           # NAV(인출없음)
+    col_nb = col_nw + 1           # G_NAV(인출전)
     col_wa = col_nb + 1           # G_인출시도
     col_ra = col_wa + 1           # W/NAV비율
     col_up = col_ra + 1           # 밴드상한
     col_lo = col_up + 1           # 밴드하한
     col_bh = col_lo + 1           # 밴드걸림
     col_wd = col_bh + 1           # G_인출실제
-    col_na = col_wd + 1           # G_NAV(인출후)
+    col_gwr = col_wd + 1          # G_인출/NAV비율
+    col_na = col_gwr + 1          # G_NAV(인출후)
     col_gr = col_na + 1           # G_수익률반영NAV
     col_cu = col_gr + 1           # G_누적인출
     col_gt = col_cu + 1           # G_총가치
     col_fb = col_gt + 1           # F_NAV(인출전)
     col_fw = col_fb + 1           # F_인출금
-    col_fn = col_fw + 1           # F_NAV(인출후)
+    col_fwr = col_fw + 1          # F_인출/NAV비율
+    col_fn = col_fwr + 1          # F_NAV(인출후)
     col_fr = col_fn + 1           # F_수익률반영NAV
     col_fc = col_fr + 1           # F_누적인출
     col_ft = col_fc + 1           # F_총가치
@@ -168,7 +172,7 @@ for fund in TARGET_FUNDS:
     ws.write(0, 0, '초기투자금', fmt_txt); ws.write(0, 1, W0, fmt_n2)
     ws.write(0, 2, '연인출률', fmt_txt); ws.write(0, 3, INIT_WR, fmt_pct)
     ws.write(0, 4, 'Band', fmt_txt); ws.write(0, 5, BAND, fmt_pct)
-    ws.write(0, 6, '월목표비율', fmt_txt); ws.write(0, 7, TARGET_RATIO, fmt_r6)
+    ws.write(0, 6, '월목표비율', fmt_txt); ws.write_formula(0, 7, '=D1/12', fmt_r6)
 
     # 헤더 (row 1)
     h = 1
@@ -178,11 +182,11 @@ for fund in TARGET_FUNDS:
         ws.write(h, col_ret + i, f'r_{a}', fmt_hdr)
         ws.write(h, col_wt + i, f'w_{a}', fmt_hdr)
     ws.write(h, col_pr, 'r_port', fmt_hdr)
-    for c, lbl in [(col_nb,'G_NAV전'),(col_wa,'G_인출시도'),(col_ra,'W/NAV'),
+    for c, lbl in [(col_nw,'NAV(인출없음)'),(col_nb,'G_NAV전'),(col_wa,'G_인출시도'),(col_ra,'W/NAV'),
                     (col_up,'상한'),(col_lo,'하한'),(col_bh,'밴드'),
-                    (col_wd,'G_인출'),(col_na,'G_NAV후'),(col_gr,'G_수익률NAV'),
+                    (col_wd,'G_인출'),(col_gwr,'G_인출/NAV'),(col_na,'G_NAV후'),(col_gr,'G_수익률NAV'),
                     (col_cu,'G_누적인출'),(col_gt,'G_총가치'),
-                    (col_fb,'F_NAV전'),(col_fw,'F_인출'),(col_fn,'F_NAV후'),
+                    (col_fb,'F_NAV전'),(col_fw,'F_인출'),(col_fwr,'F_인출/NAV'),(col_fn,'F_NAV후'),
                     (col_fr,'F_수익률NAV'),(col_fc,'F_누적인출'),(col_ft,'F_총가치')]:
         ws.write(h, c, lbl, fmt_hdr)
 
@@ -195,13 +199,27 @@ for fund in TARGET_FUNDS:
     def cl(r, c):
         return f'{xlsxwriter.utility.xl_col_to_name(c)}{r + 1}'
 
-    # 월초 행 번호 추적 (인출시도 = 전월초 인출실제 참조용)
-    prev_ms_row = None  # 전월초의 엑셀 행 번호
-    curr_ms_row = None  # 현재 월초의 엑셀 행 번호
+    # === Row 2: #0 행 (전일 BM 지수만, 인출/NAV 없음) ===
+    r0 = 2
+    ws.write(r0, 0, 0, fmt_int)
+    # 전일 = start_target 직전 영업일의 KRW 환산 지수
+    prev_mask = krw_index_df.index < start_target
+    if prev_mask.any():
+        prev_day = krw_index_df.loc[prev_mask].iloc[-1]
+        prev_date = krw_index_df.loc[prev_mask].index[-1]
+        ws.write(r0, 1, prev_date.strftime('%Y-%m-%d'), fmt_txt)
+        for i, a in enumerate(common_assets):
+            val = prev_day[a] if a in prev_day.index and pd.notna(prev_day[a]) else None
+            if val is not None:
+                ws.write(r0, col_bm + i, val, fmt_n2)
 
-    # 데이터 행
+    # 월초 행 번호 추적 (인출시도 = 전월초 인출실제 참조용)
+    prev_ms_row = None
+    curr_ms_row = None
+
+    # 데이터 행 (row 3부터)
     for di, dt in enumerate(dates):
-        r = di + 2
+        r = di + 3  # row 2=#0, row 3=첫 데이터
         is_ms = dt in month_starts
         f_n = fmt_month_row if is_ms else fmt_n2
         f_p = fmt_month_pct if is_ms else fmt_pct
@@ -213,28 +231,31 @@ for fund in TARGET_FUNDS:
 
         # BM 지수 (KRW 환산)
         for i, a in enumerate(common_assets):
-            val = krw_index_df.loc[dt, a] if dt in krw_index_df.index and a in krw_index_df.columns else None
+            try:
+                v = krw_index_df.loc[dt, a]
+                val = float(v.iloc[-1]) if hasattr(v, 'iloc') else float(v)
+            except (KeyError, IndexError, TypeError):
+                val = None
             if val is not None and not np.isnan(val):
                 ws.write(r, col_bm + i, val, f_n)
             else:
                 ws.write(r, col_bm + i, '', f_t)
 
-        # 일별 수익률 (수식: 현행/전행 - 1)
+        # 일별 수익률 (수식: 전부 현행/전행-1, #0행 덕분에 첫 행도 수식)
         for i, a in enumerate(common_assets):
             bc = col_bm + i
             rc = col_ret + i
-            if di == 0:
-                # 첫 행: 전일 BM 값으로 수익률 계산 (Python 값 직접 입력)
-                ret_val = returns_df.loc[dt, a] if dt in returns_df.index and a in returns_df.columns else 0
-                ws.write(r, rc, ret_val if pd.notna(ret_val) else 0, f_p)
-            else:
-                ws.write_formula(r, rc,
-                    f'=IF(OR({cl(r, bc)}="",{cl(r-1, bc)}=""),0,{cl(r, bc)}/{cl(r-1, bc)}-1)', f_p)
+            ws.write_formula(r, rc,
+                f'=IF(OR({cl(r, bc)}="",{cl(r-1, bc)}=""),0,{cl(r, bc)}/{cl(r-1, bc)}-1)', f_p)
 
         # 비중
         for i, a in enumerate(common_assets):
-            val = wt_df.loc[dt, a] if dt in wt_df.index and a in wt_df.columns else 0
-            ws.write(r, col_wt + i, val if pd.notna(val) else 0, f_p)
+            try:
+                v = wt_df.loc[dt, a]
+                val = float(v.iloc[-1]) if hasattr(v, 'iloc') else float(v)
+            except (KeyError, IndexError, TypeError):
+                val = 0
+            ws.write(r, col_wt + i, val if not np.isnan(val) else 0, f_p)
 
         # 포트 일별수익률 = SUMPRODUCT
         rr = f'{cl(r, col_ret)}:{cl(r, col_ret + n_ast - 1)}'
@@ -248,6 +269,12 @@ for fund in TARGET_FUNDS:
         # 다음행 NAV(인출전) = 전행 NAV(인출후) × (1 + 전행 포트수익률)
         # ============================================================
         pr_cell = cl(r, col_pr)
+
+        # NAV(인출없음) = 전행 × (1 + 전행 수익률)
+        if di == 0:
+            ws.write_formula(r, col_nw, f'=$B$1*(1+{pr_cell})', f_n)
+        else:
+            ws.write_formula(r, col_nw, f'={cl(r-1, col_nw)}*(1+{cl(r-1, col_pr)})', f_n)
 
         if is_ms:
             prev_ms_row = curr_ms_row
@@ -284,6 +311,10 @@ for fund in TARGET_FUNDS:
             ws.write(r, col_bh, '', f_t)
             ws.write(r, col_wd, 0, f_n)
 
+        # G_인출/NAV비율 = 인출실제 / NAV전
+        ws.write_formula(r, col_gwr,
+            f'=IF({cl(r, col_nb)}=0,0,{cl(r, col_wd)}/{cl(r, col_nb)})', fmt_pct)
+
         # NAV(인출후) = NAV전 - 인출실제
         ws.write_formula(r, col_na, f'={cl(r, col_nb)}-{cl(r, col_wd)}', f_n)
 
@@ -314,6 +345,10 @@ for fund in TARGET_FUNDS:
             else:
                 ws.write(r, col_fw, 0, f_n)
             ws.write_formula(r, col_fn, f'=MAX({cl(r, col_fb)}-{cl(r, col_fw)},0)', f_n)
+
+        # F_인출/NAV비율 = 인출 / NAV전
+        ws.write_formula(r, col_fwr,
+            f'=IF({cl(r, col_fb)}=0,0,{cl(r, col_fw)}/{cl(r, col_fb)})', fmt_pct)
 
         # 수익률반영NAV = NAV후 × (1 + 당일 포트수익률)
         ws.write_formula(r, col_fr, f'={cl(r, col_fn)}*(1+{cl(r, col_pr)})', f_n)

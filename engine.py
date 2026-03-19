@@ -266,13 +266,13 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
     if debug:
         debug_records = []
 
-    # 매월 시뮬레이션
+    # 매월 시뮬레이션 — Annuity Due (월초 인출 → 잔액에 수익률 적용)
+    # W_series[t]는 t월 월초 NAV (= 전월 잔액에 전월 수익률 적용된 값)
     for t in range(T):
-        # Step 1: 수익률 적용
-        W_t = W_series[t] * (1 + path_returns[t])
+        # Step 1: 월초 NAV (인출 전)
+        W_t = W_series[t]  # 이미 전월 수익률이 적용된 상태
 
         # Step 2: 인출 시도액 결정
-        # 기본: 이전 달 인출액 유지
         base = prev_withdraw
 
         # Step 3: 수익률 기반 보정 (adj_on=True일 때)
@@ -305,14 +305,12 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
         # Step 4: Guardrail — W/NAV 비율 밴드 적용
         cap_applied = 'None'
         if W_t > 0:
-            ratio = withdraw_adj / W_t     # W/NAV 월비율
+            ratio = withdraw_adj / W_t
 
             if ratio > adj_upper:
-                # 비율 과다 → 인출 축소 (자본 보전)
                 withdraw_final = adj_upper * W_t
                 cap_applied = 'Upper'
             elif ratio < adj_lower:
-                # 비율 과소 → 인출 확대 (수익 향유)
                 withdraw_final = adj_lower * W_t
                 cap_applied = 'Lower'
             else:
@@ -322,24 +320,22 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
             withdraw_final = 0
             cap_applied = 'Ruin'
 
-        # Step 5: 인출 실행
-        W_t = W_t - withdraw_final
-        W_t = max(W_t, 0)  # 음수 방지
+        # Step 5: 인출 실행 → 잔액에 수익률 적용
+        W_after_wd = max(W_t - withdraw_final, 0)
+        W_next = W_after_wd * (1 + path_returns[t])  # 잔액에 당월 수익률
 
-        # 이전 인출액 갱신 (다음 달의 기준이 됨)
         prev_withdraw = withdraw_final
 
-        # 결과 저장
-        W_series[t + 1] = W_t
+        # W_series[t+1] = 다음 월초 NAV (수익률 반영 완료)
+        W_series[t + 1] = W_next
         withdraw_series[t] = withdraw_final
 
-        # Debug 기록
         if debug:
             cum_withdraw_t = np.sum(withdraw_series[:t+1])
             debug_records.append({
                 'Month': t,
                 'Monthly_Return': path_returns[t],
-                'NAV_Before_Withdrawal': W_series[t] * (1 + path_returns[t]),
+                'NAV_Before_Withdrawal': W_t,
                 'Prev_Withdrawal': base,
                 'Adj_Withdrawal': withdraw_adj,
                 'W_NAV_Ratio': ratio,
@@ -347,7 +343,8 @@ def simulate_withdrawal_on_path(path_returns: np.ndarray,
                 'Lower_Ratio': adj_lower,
                 'Cap_Applied': cap_applied,
                 'Final_Withdrawal': withdraw_final,
-                'NAV_After_Withdrawal': W_t,
+                'NAV_After_Withdrawal': W_after_wd,
+                'NAV_After_Return': W_next,
                 'Cum_Withdrawal': cum_withdraw_t
             })
 

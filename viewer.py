@@ -152,31 +152,57 @@ def load_gbm_results():
         return None
 
 
+PRODUCT_FUNDS = {'Golden Growth', 'MS GROWTH', 'MS STABLE'}
+
 @st.cache_data
+def _load_product_paths():
+    """product_paths.pkl 로드 (신규 펀드용)"""
+    try:
+        with open('product_paths.pkl', 'rb') as f:
+            return pickle.load(f)
+    except FileNotFoundError:
+        return None
+
 def simulate_paths_for_strategy(portfolio_name, init_wr, band, beta, path_method='rolling'):
     """선택된 전략의 path에 대해 W_series와 withdraw_series를 계산"""
-    benchmark_data = load_benchmark_data()
-    preprocessor = DataPreprocessor(benchmark_data, add_portfolios=True)
-    returns_df, month_starts = preprocessor.get_data()
-    daily_returns = returns_df[portfolio_name]
-    monthly_returns = daily_to_monthly_returns(daily_returns)
 
-    rolling_paths = generate_paths_rolling(monthly_returns, T_months=120)
-
-    if path_method == 'bootstrap':
-        all_bootstrap = generate_paths_bootstrap(monthly_returns, T_months=120,
-                                                  block_length=12, n_paths=5000, seed=42)
-        rng = np.random.default_rng(42)
-        idx = rng.choice(len(all_bootstrap), min(181, len(all_bootstrap)), replace=False)
-        paths = [all_bootstrap[i] for i in idx]
-    elif path_method == 'combined':
-        all_bootstrap = generate_paths_bootstrap(monthly_returns, T_months=120,
-                                                  block_length=12, n_paths=5000, seed=42)
-        rng = np.random.default_rng(42)
-        idx = rng.choice(len(all_bootstrap), min(181, len(all_bootstrap)), replace=False)
-        paths = list(rolling_paths) + [all_bootstrap[i] for i in idx]
+    # 신규 펀드는 product_paths.pkl에서 경로 로드 (bm_list 기반, 전 자산 매핑)
+    if portfolio_name in PRODUCT_FUNDS:
+        pdata = _load_product_paths()
+        if pdata and portfolio_name in pdata['fund_paths']:
+            fp = pdata['fund_paths'][portfolio_name]
+            if path_method == 'bootstrap':
+                paths = fp['bootstrap_paths']
+            elif path_method == 'combined':
+                paths = fp['rolling_paths'] + fp['bootstrap_paths']
+            else:
+                paths = fp['rolling_paths']
+        else:
+            return [], [], []
     else:
-        paths = rolling_paths
+        # 기존 포트폴리오는 benchmark_data.pkl 기반
+        benchmark_data = load_benchmark_data()
+        preprocessor = DataPreprocessor(benchmark_data, add_portfolios=True)
+        returns_df, month_starts = preprocessor.get_data()
+        daily_returns = returns_df[portfolio_name]
+        monthly_returns = daily_to_monthly_returns(daily_returns)
+
+        rolling_paths = generate_paths_rolling(monthly_returns, T_months=120)
+
+        if path_method == 'bootstrap':
+            all_bootstrap = generate_paths_bootstrap(monthly_returns, T_months=120,
+                                                      block_length=12, n_paths=5000, seed=42)
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(all_bootstrap), min(181, len(all_bootstrap)), replace=False)
+            paths = [all_bootstrap[i] for i in idx]
+        elif path_method == 'combined':
+            all_bootstrap = generate_paths_bootstrap(monthly_returns, T_months=120,
+                                                      block_length=12, n_paths=5000, seed=42)
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(all_bootstrap), min(181, len(all_bootstrap)), replace=False)
+            paths = list(rolling_paths) + [all_bootstrap[i] for i in idx]
+        else:
+            paths = rolling_paths
 
     success_paths = []
     failure_paths = []

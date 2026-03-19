@@ -117,6 +117,7 @@ for fund in funds:
                         result['portfolio'] = fund
                         result['path_method'] = pm
                         result['strategy_type'] = strategy_type
+                        result['beta'] = beta
                         result['vol_adj'] = is_vol_adj
                         result['is_frontier'] = False
                         result['is_optimal'] = False
