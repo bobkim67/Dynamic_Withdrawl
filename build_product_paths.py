@@ -33,7 +33,7 @@ ASSET_MAP = {
     '미국 가치주':      ('M2US000V Index',   'USD'),
     '한국 주식':        ('M2KR INDEX',       'KRW'),
     '호주 주식':        ('GDDUAS INDEX',     'USD'),
-    '선진국 주식':      ('TAD09XU Index',    'USD'),
+    '선진국 주식':      ('MXWOU Index',      'USD'),  # MSCI World ex-USA (구 TAD09XU)
     '신흥국 주식':      ('M2EF Index',       'USD'),
     '금':              ('XAU Curncy',        'USD'),
     '글로벌 원자재':    ('SPGSCITR Index',    'USD'),
@@ -42,13 +42,13 @@ ASSET_MAP = {
     '글로벌 인프라':    ('SPGTIND Index',     'USD'),
     '미국 물가채권':    ('LBUTTRUU Index',    'USD'),
     '미국 하이일드채권': ('LF98TRUU Index',   'USD'),
-    '한국 10년국고채권': ('KOSEF_10yr',       'KRW'),
-    '한국 3년국고채권':  ('KTBTR Index',      'KRW'),
+    '한국 10년국고채권': ('BC001060',          'KRW'),  # KIS장기 5Y- (구 KOSEF_10yr)
+    '한국 3년국고채권':  ('BC001058',          'KRW'),  # KIS중기 2-3Y (구 KTBTR Index)
     '한국 종합채권':    ('KBPMKTMB Index',    'KRW'),
-    '한국 단기채권':    ('BMA03',             'KRW'),
-    '미국 10년국고채권': ('IEF',              'USD'),
-    '미국 종합국채':    ('IEF',              'USD'),
-    '한국 중장기국공채권': ('BMA02',           'KRW'),
+    '한국 단기채권':    ('BC001056',          'KRW'),  # KIS단기 3M-1Y (구 BMA03)
+    '미국 10년국고채권': ('LT10TRUU Index',    'USD'),  # Bloomberg US Treasury 7-10Y TR (구 IEF)
+    '미국 종합국채':    ('LUATTRUU Index',    'USD'),  # Bloomberg US Treasury TR (종합국채)
+    '한국 중장기국공채권': ('BC001059',         'KRW'),  # KIS중장기 3-5Y (구 BMA02)
 }
 
 # MP 자산명 표준화 (변형 이름 → ASSET_MAP 키로 통일)
@@ -123,7 +123,7 @@ for fund in TARGET_FUNDS:
 
 print("\n3. KRW 환산 일별 수익률 계산...")
 
-fx = bm[FX_COL].copy()
+fx = bm[FX_COL].ffill().copy()
 fx_ret = fx.pct_change()
 
 asset_returns_krw = {}
@@ -131,7 +131,7 @@ for asset_name, (col, ccy) in ASSET_MAP.items():
     if col not in bm.columns:
         print(f"   [SKIP] {asset_name}: {col} 컬럼 없음")
         continue
-    price = bm[col].copy()
+    price = bm[col].ffill().copy()  # 미국 공휴일 등 NaN → 전일값 채움
     if ccy == 'USD':
         # T일 KRW 기준가 = USD가격(T-1) × 환율(T)
         # KRW 수익률(T) = USD수익률(T-1) × 환율변동(T)
@@ -198,7 +198,7 @@ print("\n5. Rolling + Bootstrap 경로 생성...")
 
 from engine import generate_paths_bootstrap
 
-T_MONTHS = 120
+T_MONTHS = 240
 BOOTSTRAP_N_GENERATE = 5000
 BOOTSTRAP_N_SAMPLE = 181
 BOOTSTRAP_SEED = 42

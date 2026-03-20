@@ -56,7 +56,7 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 - **`withdrawal_backtest.py`**: `DataPreprocessor`, `PORTFOLIOS` 딕셔너리 (6개 포트폴리오: Port_4.0%~Port_9.0%), `BENCHMARK_MAPPING`, `PortfolioCalculator`. engine.py, grid_search.py, viewer.py가 공통으로 import하는 데이터 레이어.
 - **`engine.py`**: 핵심 시뮬레이션 엔진. 경로 생성(rolling/bootstrap/GBM), `simulate_withdrawal_on_path` (scalar), `simulate_withdrawal_on_paths_vectorized` (numpy 벡터화), `evaluate_strategy` / `evaluate_gbm_strategy` (집계 지표), `pareto_frontier`, `select_optimal`. `__main__` 블록에 검증 테스트 포함 (벡터화 vs scalar 일치 확인).
-- **`grid_search.py`**: Historical 파라미터 그리드 정의. 출력: `grid_results_full.pkl`, `grid_results_summary.xlsx`.
+- **`grid_search.py`**: Historical 파라미터 그리드 정의. T_MONTHS=240 (20년). 현재 Port_9.0% only. 출력: `grid_results_full.pkl`, `grid_results_summary.xlsx`.
 - **`gbm_grid_search.py`**: GBM MC 파라미터 그리드 (mu 2-12%, sigma 2-20%, init_wr 3-15%, band 5종, beta 5종). Fixed 케이스에 Closed-form 확률도 동시 계산 (`cf_success_rate`). 출력: `gbm_results.pkl` (130,625 레코드), `gbm_results_summary.xlsx`.
 - **`viewer.py`**: Streamlit 앱 (7개 탭, 설득 흐름 구조). `@st.cache_data`로 데이터 캐싱. `BETA_LABELS` 5단계. 사이드바에 글로벌 컨트롤 3개 (원본 대비 기말잔액 비율 / 초기 인출률 / 데이터 기반). Tab 1(Fixed vs Guardrail 비교 인포그래픽), Tab DV(데이터 검증 스파게티), Tab 2(GBM 변동성별 분석), Tab 3(2컬럼: 좌 Historical + 우 GBM 비교 + full-width 효과 분석/분석결과), Tab 4(Band별 성공률 곡선만), Tab 5(Vol-Adjusted 3종 비교), Tab 6(Assumptions). 디폴트 데이터 기반: Bootstrap.
 - **`guardrail_infographic.py`**: standalone matplotlib 인포그래픽 (NAV + 인출 화살표). 출력: `guardrail_infographic.png/svg`.
@@ -65,7 +65,7 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 ### 신규 상품 펀드 파이프라인 (v4+)
 
-- **`build_product_paths.py`**: bm_list + MP_Position → 3개 펀드(Golden Growth, MS GROWTH, MS STABLE)의 KRW 환산 일별 수익률 → 월간 수익률 → Rolling + Bootstrap 경로 생성. 출력: `product_paths.pkl`. USD 자산은 T-1 래그 반영 (`usd_ret.shift(1)`). MP 자산명 표준화 (`MP_NAME_ALIAS`).
+- **`build_product_paths.py`**: bm_list + MP_Position → 3개 펀드(Golden Growth, MS GROWTH, MS STABLE)의 KRW 환산 일별 수익률 → 월간 수익률 → Rolling + Bootstrap 경로 생성. 출력: `product_paths.pkl`. USD 자산은 T-1 래그 반영 (`usd_ret.shift(1)`). MP 자산명 표준화 (`MP_NAME_ALIAS`). T_MONTHS=240 (20년). 가격/환율 데이터 ffill 적용 (미국 공휴일 NaN 처리). ASSET_MAP에서 한국 채권 4종(BC001056~60), 선진국 주식(MXWOU), 미국 국채(LT10TRUU/LUATTRUU) 매핑.
 - **`grid_search_product.py`**: product_paths.pkl 기반 grid search. 기존 grid_results_full.pkl에 합산. 3개 펀드 × rolling/bootstrap.
 - **`run_product_sim.py`**: product_paths.pkl 기반 인출 시뮬레이션 (Fixed vs Guardrail). 출력: `product_sim_results.pkl`.
 - **`export_rolling_detail.py`**: 2016-01~2025-12 rolling 경로의 **일별 수식 기반 엑셀** 출력. 전체 셀이 엑셀 수식. BM 지수는 KRW 환산 누적지수. 월초에만 인출 발생. NAV 로직: `NAV(인출후) = NAV(인출전) - 인출`, `수익률반영NAV = NAV(인출후) × (1 + r)`, 다음행 `NAV(인출전) = 전행 수익률반영NAV`.
@@ -73,22 +73,36 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 
 ### Efficient Frontier 분석 도구
 
-- **`_frontier.py`**: 비율밴드 efficient frontier + vol-adjusted 비대칭 밴드 alpha 시각화. 3펀드 × 3차트(NAV/인출, Tot/Std, Tot/Worst) = 9탭 HTML. 출력: `efficient_frontier_vol_ratio.html`. Vol-adj 모델: 1σ SNR 기준 bl/bh 스위칭.
+- **`_frontier.py`**: 비율밴드 efficient frontier + vol-adjusted 비대칭 밴드 alpha 시각화. 3펀드 × 3차트(NAV/인출, Tot/Std, Tot/Worst) = 9탭 HTML. 출력: `efficient_frontier_vol_ratio.html`. Vol-adj 모델: 연속 스케일링 (SNR 스위칭은 폐기). 분석 결과: `frontier_comparison.pkl`.
 - **`_frontier_xlsx.py`**: frontier 데이터를 엑셀로 출력. Frontier 곡선 + FA + FR + G5% + Vol 5/8%, 5/10%, 5/15%. 출력: `frontier_data.xlsx` (6시트).
 - **`quadrant_ruin_worst.html`**: 2x2 사분면 차트 (X: Worst Cut, Y: Ruin Rate). FA vs FR vs Guardrail vs Vol-Adj 포지셔닝.
 
-### 전략 비교 핵심 결론
+### 전략 비교 핵심 결론 (T=240, Rolling)
 
-- **FA vs FR vs Guardrail**: Guardrail = FR의 파산 0건 + FA의 인출 안정성 결합
-- **Tot에서는 FR이 항상 우위** (Guardrail은 -1~2 양보). 알파는 인출 안정성(worst cut)에서만 존재
-- **Vol-Adj 5/8~15%**: 고변동성 펀드(MS GROWTH)에서 worst cut 개선 -5%p 수준
+- **FA vs Guard 5%**: 파산률 100%→0% (Port_9%/GG/MSG). Tot +55~65 개선. Guard가 FA를 완전 지배.
+- **FR vs Guard 5%**: MoM 변화율 Std 50~60% 개선 (전 펀드 일관). 인출 변동성 측정은 MoM 변화율 Std (전월 대비 인출 변동폭)로 확정. 월별 인출액 Std로는 Guard가 불리 (NAV 소진 효과).
+- **Vol-Adj (연속 스케일링 비대칭)**: Vol-Adj 5/15가 전 펀드에서 Tot/MoM/Worst 3개 지표 모두 Guard 5% 대비 개선 (유일). Vol-Adj 10/10은 MoM/Worst 최강이나 Tot 3~10 양보.
+- **SNR 스위칭**: 펀드별 결과 비일관 → 폐기. 연속 스케일링만 유효.
 - **셀링 포인트**: "FR처럼 파산 0건이면서, 하락장에서 인출이 급감하지 않음"
+
+### bm_list 지수 교체 (2026-03-20)
+
+| 기존 | 신규 | 설명 |
+|------|------|------|
+| BMA03 | BC001056 | KIS 단기 3M-1Y (2001~) |
+| KTBTR Index | BC001058 | KIS 중기 2-3Y (2001~) |
+| BMA02 | BC001059 | KIS 중장기 3-5Y (2001~) |
+| KOSEF_10yr | BC001060 | KIS 장기 5Y- (2001~) |
+| TAD09XU Index | MXWOU Index | MSCI World ex-USA (2001~) |
+| IEF | LT10TRUU Index + LUATTRUU Index | 미국 10년국채 + 미국 종합국채 |
+
+교체 효과: 전 자산 2001년부터 사용 가능, Rolling 경로 40→54~64개로 증가.
 
 ### 신규 상품 데이터 흐름
 
 1. `../bm_list` (17개 자산 일별 가격지수 + USDKRW 환율)
 2. `../MP_Position_20260317` (일별 MP 비중, 리밸런싱 시점에만 변경)
-3. `build_product_paths.py`: 일별 KRW 환산 수익률 (USD T-1 래그) → 월간 복리 → Rolling 55개 + Bootstrap 181개
+3. `build_product_paths.py`: 일별 KRW 환산 수익률 (USD T-1 래그) → 월간 복리 → Rolling 54~64개 + Bootstrap 181개
 4. `grid_search_product.py`: 9개 포트폴리오 총 27,000건 grid results
 5. `viewer.py`: 기존 6개 + 신규 3개 포트폴리오 통합 표시
 
@@ -107,9 +121,11 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 3.5. **변동성 밴드 조정** (vol_adj=True일 때):
    - `σ_realized = std(최근 12개월 수익률, ddof=1) × √12` (연율화)
    - `sigma_ratio = clip(σ_realized / σ_target, 0.5, 2.0)`
-   - `effective_band = base_band × sigma_ratio`
+   - `effective_band = base_band × sigma_ratio` (연속 스케일링)
    - 고변동성 → 밴드 확대 (인출 조절 강화), 저변동성 → 밴드 축소 (인출 안정 유지)
    - `sigma_ratio = 1.0`이면 기존 guardrail과 동일 (backward compatible)
+   - **비대칭 밴드**: band_upper/band_lower 별도 설정 가능 (예: 5/15 = lower 5%, upper 15%)
+   - **SNR 스위칭 방식은 폐기** (펀드별 결과 비일관)
 4. Guardrail 밴드 (W/NAV 비율 기준):
    - `target_ratio = init_wr / 12` (목표 월비율)
    - `upper_ratio = target_ratio * (1 + effective_band)`, `lower_ratio = target_ratio * (1 - effective_band)`
@@ -143,8 +159,10 @@ Streamlit에서 무거운 시뮬레이션을 돌리지 않는다. 단, Strategy 
 8. ~~**engine.py Guardrail 로직 통일**~~ — v6.0에서 W/NAV 비율 밴드 방식으로 통일 완료
 9. ~~**Tab 3 리팩토링**~~ — v7.0에서 2컬럼 레이아웃 + Section 4,5 삭제 + 분석결과 확장 완료
 10. ~~**Volatility-Adjusted Guardrail**~~ — v7.2에서 engine.py vol_adj 파라미터 + grid_search/gbm_grid_search vol_adjusted 전략 추가 + viewer.py 3종 비교 완료
-11. **engine.py 월초 인출(Annuity Due) 로직 전환** — 엑셀은 월초 인출로 구현 완료. engine.py는 아직 Ordinary Annuity. 수치 차이 0.6% 수준. 통일 검토 필요.
+11. ~~**engine.py 월초 인출(Annuity Due) 로직 전환**~~ — 완료
 12. **엑셀 검증열과 Python 값 일치 확인** — 첫 행 수익률 0% 문제 수정 완료. 최종 총가치 일치 여부 검증 진행 중.
+13. **engine.py 비대칭 밴드 (band_upper/band_lower) 파라미터 추가** — Vol-Adj 연속 스케일링에서 비대칭 밴드가 유효. 5/15 조합이 전 펀드에서 3지표 개선.
+14. **Vol-Adj 연속 스케일링 σ_target 설정 방법론 확립** — 현재 포트폴리오의 target_risk 사용. 사전 설정 없이 실현 변동성만으로 결정하는 방법 검토 필요.
 
 ## 내부 의사결정 장표 (6장) — 제안서 구조
 

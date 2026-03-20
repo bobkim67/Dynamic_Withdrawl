@@ -34,10 +34,10 @@ from engine import (
 
 CONFIG = {
     # 대상 포트폴리오
-    'portfolios': ['Port_4.0%', 'Port_5.0%', 'Port_6.0%', 'Port_7.0%', 'Port_8.0%', 'Port_9.0%'],
+    'portfolios': ['Port_9.0%'],
 
     # Path 설정
-    'T_months': 120,           # 10년
+    'T_months': 240,           # 20년
     'path_methods': ['rolling', 'bootstrap'],   # bootstrap 활성화
     'bootstrap_block': 12,
     'bootstrap_n_sample': 181,   # rolling과 동일 수로 샘플링
